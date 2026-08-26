@@ -8,6 +8,7 @@ export function QueueView({
   onSelectTrack,
   onRemoveTrack,
   onSavePlaylist,
+  onConnectSpotify,
   isInfiniteFlow = false,
   onToggleInfiniteFlow,
 }) {
@@ -164,7 +165,18 @@ export function QueueView({
           </button>
         </div>
         {saveResult && !saveResult.ok && (
-          <p className="mt-1 text-xs text-rose-400">{saveResult.error || 'Failed to save playlist.'}</p>
+          <div className="mt-2 p-2.5 rounded-xl bg-rose-950/40 border border-rose-500/30 text-rose-300 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+            <span className="flex-1">{saveResult.error || 'Failed to save playlist.'}</span>
+            {onConnectSpotify && (saveResult.needsReauth || saveResult.error?.toLowerCase().includes('permission') || saveResult.error?.toLowerCase().includes('reconnect')) && (
+              <button
+                type="button"
+                onClick={onConnectSpotify}
+                className="shrink-0 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[11px] transition-all active:scale-95 shadow-md shadow-emerald-950/50"
+              >
+                Reconnect Spotify
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

@@ -7,6 +7,7 @@ from app.llm.base import BaseLLMClient, CurationResult, SeedTrack, SteerResult
 
 logger = logging.getLogger(__name__)
 
+
 class OllamaLLMClient(BaseLLMClient):
     """
     Local Ollama implementation for open-source offline LLM curation.
@@ -25,13 +26,13 @@ class OllamaLLMClient(BaseLLMClient):
             "model": self.model,
             "prompt": full_prompt,
             "stream": False,
-            "format": "json"
+            "format": "json",
         }
 
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         )
 
         try:
@@ -39,7 +40,9 @@ class OllamaLLMClient(BaseLLMClient):
                 result = json.loads(response.read().decode("utf-8"))
                 return result.get("response", "")
         except Exception as e:
-            logger.error(f"Ollama API request failed ({e}) for model '{self.model}' at {url}")
+            logger.error(
+                f"Ollama API request failed ({e}) for model '{self.model}' at {url}"
+            )
             raise e
 
     def generate_seed_tracks(
@@ -50,13 +53,13 @@ class OllamaLLMClient(BaseLLMClient):
             "{\n"
             '  "curator_summary": "Brief 1-sentence summary",\n'
             '  "seeds": [\n'
-            '    {\n'
+            "    {\n"
             '      "artist": "Artist Name",\n'
             '      "track_name": "Song Title",\n'
             '      "reasoning": "1-sentence reason",\n'
             '      "vibe_tags": ["tag1", "tag2"]\n'
-            '    }\n'
-            '  ]\n'
+            "    }\n"
+            "  ]\n"
             "}\n"
             "Respect language and genre constraints specified by user."
         )
@@ -97,7 +100,9 @@ class OllamaLLMClient(BaseLLMClient):
             '  "tracks_to_remove": []\n'
             "}\n"
         )
-        user_content = f"Currently playing: {current_track}\nUser feedback: {feedback}\n"
+        user_content = (
+            f"Currently playing: {current_track}\nUser feedback: {feedback}\n"
+        )
         if recent_skips:
             user_content += f"Skips: {', '.join(recent_skips)}\n"
 
@@ -121,9 +126,7 @@ class OllamaLLMClient(BaseLLMClient):
             explanation=data.get("explanation", "Queue steered via Ollama."),
         )
 
-    def update_user_profile(
-        self, current_profile: str, positive_signal: str
-    ) -> str:
+    def update_user_profile(self, current_profile: str, positive_signal: str) -> str:
         prompt = (
             f"Current profile: '{current_profile}'\nLiked: '{positive_signal}'\n"
             "Synthesize an updated music profile in 1 concise sentence."
@@ -138,11 +141,19 @@ class OllamaLLMClient(BaseLLMClient):
         queue_tracks: Optional[List[str]] = None,
         user_profile: Optional[str] = None,
     ) -> List[str]:
-        system_instruction = "Return JSON with 4 short music vibe shift suggestions: {\"suggestions\": [\"opt1\", \"opt2\", \"opt3\", \"opt4\"]}"
-        user_content = f"Prompt: {prompt}\nTrack: {current_track}\nQueue: {queue_tracks}"
+        system_instruction = 'Return JSON with 4 short music vibe shift suggestions: {"suggestions": ["opt1", "opt2", "opt3", "opt4"]}'
+        user_content = (
+            f"Prompt: {prompt}\nTrack: {current_track}\nQueue: {queue_tracks}"
+        )
         try:
             raw = self._generate(user_content, system_instruction)
-            clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            clean = (
+                raw.strip()
+                .removeprefix("```json")
+                .removeprefix("```")
+                .removesuffix("```")
+                .strip()
+            )
             data = json.loads(clean or "{}")
             suggestions = data.get("suggestions", [])
             if isinstance(suggestions, list) and len(suggestions) >= 2:
@@ -153,7 +164,7 @@ class OllamaLLMClient(BaseLLMClient):
             "Increase Energy & BPM",
             "Soften & Go Acoustic",
             "Shift Era / Nostalgic",
-            "More Heavy Bass & Beats"
+            "More Heavy Bass & Beats",
         ]
 
     def extend_infinite_queue(
@@ -179,25 +190,25 @@ class OllamaLLMClient(BaseLLMClient):
         if steer_history:
             user_content += f"Steers: {', '.join(steer_history)}\n"
         if played_tracks:
-            user_content += f"Played Tracks (DO NOT REPEAT): {', '.join(played_tracks[-25:])}\n"
+            user_content += (
+                f"Played Tracks (DO NOT REPEAT): {', '.join(played_tracks[-25:])}\n"
+            )
         if user_profile:
             user_content += f"User Profile: {user_profile}\n"
 
-        try:
-            raw_response = self._generate(user_content, system_instruction)
-            clean_json = raw_response.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            data = json.loads(clean_json or "{}")
-            seeds = [SeedTrack(**s) for s in data.get("seeds", [])]
-            summary = data.get("curator_summary", f"Infinite flow extension for '{initial_prompt}'")
-            return CurationResult(prompt=initial_prompt, seeds=seeds, curator_summary=summary)
-        except Exception as e:
-            logger.error(f"Ollama infinite queue extension error: {e}")
-            fallback_mock = MockLLMClient()
-            return fallback_mock.extend_infinite_queue(
-                initial_prompt=initial_prompt,
-                steer_history=steer_history,
-                played_tracks=played_tracks,
-                current_track=current_track,
-                user_profile=user_profile
-            )
-
+        raw_response = self._generate(user_content, system_instruction)
+        clean_json = (
+            raw_response.strip()
+            .removeprefix("```json")
+            .removeprefix("```")
+            .removesuffix("```")
+            .strip()
+        )
+        data = json.loads(clean_json or "{}")
+        seeds = [SeedTrack(**s) for s in data.get("seeds", [])]
+        summary = data.get(
+            "curator_summary", f"Infinite flow extension for '{initial_prompt}'"
+        )
+        return CurationResult(
+            prompt=initial_prompt, seeds=seeds, curator_summary=summary
+        )

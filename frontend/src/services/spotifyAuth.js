@@ -10,6 +10,7 @@ const SPOTIFY_SCOPES = [
   'playlist-modify-private',
   'playlist-modify-public',
   'playlist-read-private',
+  'playlist-read-collaborative',
 ].join(' ');
 
 const TOKEN_KEY = 'flowstate_spotify_access_token';

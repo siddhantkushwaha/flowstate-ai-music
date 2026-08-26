@@ -417,14 +417,15 @@ export function useSpotifyPlayer() {
 
   // Save or overwrite a Spotify playlist with the current queue
   const saveAsPlaylist = useCallback(async (playlistName) => {
-    if (!token) return { ok: false, error: 'Please connect Spotify first.' };
+    if (!token) return { ok: false, error: 'Please connect Spotify first.', needsReauth: true };
 
     const currentQ = queueRef.current;
     // Extract strictly valid Spotify URIs (spotify:track:<22-char-id>)
     const validUris = currentQ
       .map((t) => {
-        if (t.uri && t.uri.startsWith('spotify:track:')) return t.uri;
+        if (t.uri && /^spotify:track:[0-9A-Za-z]{22}$/.test(t.uri)) return t.uri;
         if (t.id && /^[0-9A-Za-z]{22}$/.test(t.id)) return `spotify:track:${t.id}`;
+        if (t.uri && t.uri.startsWith('spotify:track:')) return t.uri;
         return null;
       })
       .filter(Boolean);
@@ -444,14 +445,14 @@ export function useSpotifyPlayer() {
         const errText = await meRes.text();
         console.error(`[Spotify SDK] /me failed (${meRes.status}):`, errText);
         if (meRes.status === 401) {
-          return { ok: false, error: 'Session expired. Please click "Connect Spotify" to re-authenticate.' };
+          return { ok: false, error: 'Session expired. Please reconnect Spotify.', needsReauth: true };
         }
         return { ok: false, error: 'Failed to access Spotify profile.' };
       }
       const me = await meRes.json();
       const userId = me.id;
 
-      // 2. Check existing user playlists to see if one with the same name exists
+      // 2. Check existing user playlists to see if one with the same name exists and is owned by the user
       let existingId = null;
       try {
         let offset = 0;
@@ -462,10 +463,16 @@ export function useSpotifyPlayer() {
           if (!plRes.ok) break;
           const plData = await plRes.json();
           const items = plData.items || [];
-          const found = items.find((p) => p && p.name && p.name.trim().toLowerCase() === playlistName.trim().toLowerCase());
+          const found = items.find(
+            (p) =>
+              p &&
+              p.name &&
+              p.name.trim().toLowerCase() === playlistName.trim().toLowerCase() &&
+              (p.owner?.id === userId || p.collaborative === true)
+          );
           if (found) {
             existingId = found.id;
-            console.log(`[Spotify SDK] Found existing playlist with name "${playlistName}": ${existingId}`);
+            console.log(`[Spotify SDK] Found existing user-owned playlist with name "${playlistName}": ${existingId}`);
             break;
           }
           if (!plData.next || items.length === 0) break;
@@ -475,41 +482,154 @@ export function useSpotifyPlayer() {
         console.warn('[Spotify SDK] Could not search existing playlists:', e);
       }
 
-      // Helper to add or replace tracks in playlist
+      // Helper to add or replace tracks in playlist with 100-item batching, fallback endpoints, and full logging
       const setPlaylistTracks = async (playlistId, isNew = false) => {
-        const payload = { uris: validUris.slice(0, 100) };
-        const method = isNew ? 'POST' : 'PUT';
+        const chunkSize = 100;
+        for (let i = 0; i < validUris.length; i += chunkSize) {
+          const chunk = validUris.slice(i, i + chunkSize);
+          const method = !isNew && i === 0 ? 'PUT' : 'POST';
 
-        console.log(`[Spotify SDK] ${method} tracks to playlist ${playlistId}:`, payload);
-        let res = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
-          method,
+          console.log(`[Spotify SDK] [setPlaylistTracks] Batch ${Math.floor(i / chunkSize) + 1}: ${method} ${chunk.length} tracks to playlist ID: ${playlistId}`, {
+            playlistId,
+            method,
+            isNew,
+            totalTracksInQueue: validUris.length,
+            chunkSample: chunk.slice(0, 3),
+            fullChunk: chunk,
+          });
+
+          // Endpoints to attempt: /tracks then /items
+          const endpoints = [
+            `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+            `https://api.spotify.com/v1/playlists/${playlistId}/items`,
+          ];
+
+          let success = false;
+          let lastStatus = 0;
+          let lastErrorDetail = '';
+
+          for (const endpoint of endpoints) {
+            try {
+              console.log(`[Spotify SDK] Sending ${method} request to ${endpoint}...`);
+              const res = await fetch(endpoint, {
+                method,
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ uris: chunk }),
+              });
+
+              const resText = await res.text();
+              lastStatus = res.status;
+              let parsedBody = null;
+              try { parsedBody = JSON.parse(resText); } catch {}
+
+              console.log(`[Spotify SDK] Response from ${endpoint} [Status ${res.status}]:`, parsedBody || resText);
+
+              if (res.ok || res.status === 200 || res.status === 201) {
+                success = true;
+                break;
+              } else {
+                const apiMsg = parsedBody?.error?.message || parsedBody?.error_description || resText || `HTTP ${res.status}`;
+                lastErrorDetail = apiMsg;
+                console.warn(`[Spotify SDK] Endpoint ${endpoint} failed (${res.status}): ${apiMsg}`);
+
+                // Try query parameter fallback for /tracks if JSON body failed
+                if (endpoint.includes('/tracks')) {
+                  const queryUris = encodeURIComponent(chunk.join(','));
+                  const queryEndpoint = `${endpoint}?uris=${queryUris}`;
+                  console.log(`[Spotify SDK] Trying fallback query param URL: ${queryEndpoint}`);
+                  const queryRes = await fetch(queryEndpoint, {
+                    method,
+                    headers: {
+                      Authorization: `Bearer ${token}`,
+                    },
+                  });
+                  const queryResText = await queryRes.text();
+                  console.log(`[Spotify SDK] Fallback query param response [Status ${queryRes.status}]:`, queryResText);
+                  if (queryRes.ok || queryRes.status === 200 || queryRes.status === 201) {
+                    success = true;
+                    break;
+                  }
+                }
+              }
+            } catch (err) {
+              console.error(`[Spotify SDK] Exception calling ${endpoint}:`, err);
+              lastErrorDetail = err.message || String(err);
+            }
+          }
+
+          if (!success) {
+            console.error(`[Spotify SDK] Failed to add tracks to playlist ${playlistId}. Final Status: ${lastStatus}, Detail: ${lastErrorDetail}`);
+            return {
+              ok: false,
+              status: lastStatus,
+              error: lastErrorDetail || `Spotify API error (${lastStatus})`,
+            };
+          }
+        }
+        return { ok: true };
+      };
+
+      // Helper to create fresh playlist under current user
+      const createFreshPlaylist = async () => {
+        console.log(`[Spotify SDK] Creating new playlist "${playlistName}" for user: ${userId}`);
+        const payload = JSON.stringify({
+          name: playlistName,
+          description: 'Curated via Flowstate AI Music',
+          public: false,
+        });
+
+        let createRes = await fetch('https://api.spotify.com/v1/me/playlists', {
+          method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(payload),
+          body: payload,
         });
 
-        if (!res.ok) {
-          const errText = await res.text();
-          console.error(`[Spotify SDK] ${method} /playlists/${playlistId}/tracks failed (${res.status}):`, errText);
-
-          // If JSON body failed, attempt query parameter fallback
-          const queryUris = encodeURIComponent(validUris.slice(0, 100).join(','));
-          const fallbackRes = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?uris=${queryUris}`, {
-            method,
+        if (!createRes.ok && userId) {
+          // Fallback to /users/{userId}/playlists endpoint
+          console.log(`[Spotify SDK] /me/playlists returned ${createRes.status}. Trying /users/${userId}/playlists fallback...`);
+          createRes = await fetch(`https://api.spotify.com/v1/users/${encodeURIComponent(userId)}/playlists`, {
+            method: 'POST',
             headers: {
               Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
             },
+            body: payload,
           });
-
-          if (!fallbackRes.ok) {
-            const fallbackErr = await fallbackRes.text();
-            console.error(`[Spotify SDK] Fallback query ${method} tracks failed (${fallbackRes.status}):`, fallbackErr);
-            return { ok: false, status: res.status, error: errText };
-          }
         }
-        return { ok: true };
+
+        if (!createRes.ok) {
+          const errText = await createRes.text();
+          let parsedErr = null;
+          try { parsedErr = JSON.parse(errText); } catch {}
+          const errorMsg = parsedErr?.error?.message || parsedErr?.error_description || errText || `HTTP ${createRes.status}`;
+          console.error(`[Spotify SDK] Create playlist failed (${createRes.status}):`, errorMsg);
+          return {
+            ok: false,
+            needsReauth: createRes.status === 403 || createRes.status === 401,
+            error: `Failed to create playlist (${createRes.status}): ${errorMsg}`,
+          };
+        }
+
+        const newPl = await createRes.json();
+        console.log(`[Spotify SDK] Playlist created successfully: ID=${newPl.id}, Name="${newPl.name}". Now adding ${validUris.length} tracks...`, newPl);
+
+        const addResult = await setPlaylistTracks(newPl.id, true);
+        if (!addResult.ok) {
+          console.error(`[Spotify SDK] Created playlist "${playlistName}" (${newPl.id}) but failed to add tracks:`, addResult);
+          return {
+            ok: false,
+            needsReauth: addResult.status === 403 || addResult.status === 401,
+            error: `Created playlist "${playlistName}" but failed to add tracks: ${addResult.error}`,
+          };
+        }
+
+        return { ok: true, id: newPl.id, created: true };
       };
 
       // 3. Overwrite existing or create new playlist
@@ -517,65 +637,12 @@ export function useSpotifyPlayer() {
         console.log(`[Spotify SDK] Overwriting tracks in existing playlist: ${existingId}`);
         const updateResult = await setPlaylistTracks(existingId, false);
         if (!updateResult.ok) {
-          if (updateResult.status === 403) {
-            return {
-              ok: false,
-              error: 'Playlist write permission missing. Please click "Connect Spotify" to refresh permissions.',
-            };
-          }
-          return { ok: false, error: `Failed to update playlist (${updateResult.status}).` };
+          console.warn(`[Spotify SDK] Failed to update playlist ${existingId} (${updateResult.status}: ${updateResult.error}). Falling back to creating new playlist.`);
+          return await createFreshPlaylist();
         }
         return { ok: true, id: existingId, created: false };
       } else {
-        console.log(`[Spotify SDK] Creating new playlist "${playlistName}" for user: ${userId}`);
-        let createRes = await fetch(`https://api.spotify.com/v1/me/playlists`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            name: playlistName,
-            description: 'Curated via Flowstate AI Music',
-          }),
-        });
-
-        if (!createRes.ok && userId) {
-          // Fallback to /users/{userId}/playlists endpoint
-          createRes = await fetch(`https://api.spotify.com/v1/users/${userId}/playlists`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              name: playlistName,
-              description: 'Curated via Flowstate AI Music',
-            }),
-          });
-        }
-
-        if (!createRes.ok) {
-          const errText = await createRes.text();
-          console.error(`[Spotify SDK] Create playlist failed (${createRes.status}):`, errText);
-          if (createRes.status === 403) {
-            return {
-              ok: false,
-              error: 'Playlist creation permission missing. Please click "Connect Spotify" to grant playlist permissions.',
-            };
-          }
-          return { ok: false, error: `Failed to create playlist (${createRes.status}).` };
-        }
-
-        const newPl = await createRes.json();
-        console.log(`[Spotify SDK] Playlist created successfully: ${newPl.id}. Adding ${validUris.length} tracks...`);
-
-        const addResult = await setPlaylistTracks(newPl.id, true);
-        if (!addResult.ok) {
-          return { ok: false, error: `Created playlist but failed to add tracks (${addResult.status}).` };
-        }
-
-        return { ok: true, id: newPl.id, created: true };
+        return await createFreshPlaylist();
       }
     } catch (e) {
       console.error('[Spotify SDK] Save playlist exception:', e);

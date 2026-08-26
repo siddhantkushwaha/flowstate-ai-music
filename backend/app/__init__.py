@@ -4,10 +4,11 @@ from flask_cors import CORS
 from app.config import Config
 from app.routes import curation_bp, feedback_bp
 
+
 def create_app(config_class=Config):
     static_dist = os.environ.get(
         "STATIC_DIR",
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../static_dist"))
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../static_dist")),
     )
 
     if os.path.exists(static_dist):
@@ -26,18 +27,22 @@ def create_app(config_class=Config):
 
     @app.route("/api/health", methods=["GET"])
     def health_check():
-        return jsonify({
-            "status": "healthy",
-            "llm_provider": app.config.get("LLM_PROVIDER")
-        }), 200
+        return (
+            jsonify(
+                {"status": "healthy", "llm_provider": app.config.get("LLM_PROVIDER")}
+            ),
+            200,
+        )
 
     @app.route("/api/config", methods=["GET"])
     def client_config():
-        return jsonify({
-            "spotify_client_id": app.config.get("SPOTIFY_CLIENT_ID", "")
-        }), 200
+        return (
+            jsonify({"spotify_client_id": app.config.get("SPOTIFY_CLIENT_ID", "")}),
+            200,
+        )
 
     if os.path.exists(static_dist):
+
         @app.route("/", defaults={"path": ""})
         @app.route("/<path:path>")
         def serve_spa(path):

@@ -1,12 +1,12 @@
 import logging
 from flask import Blueprint, request, jsonify
 from app.llm import get_llm_client
-from app.llm.mock_client import MockLLMClient
 from app.services.music_service import MusicService
 
 logger = logging.getLogger(__name__)
 curation_bp = Blueprint("curation", __name__)
 music_service = MusicService()
+
 
 @curation_bp.route("/curate", methods=["POST"])
 def curate():
@@ -21,23 +21,30 @@ def curate():
     if not prompt:
         return jsonify({"error": "Prompt is required"}), 400
 
-    llm_client = get_llm_client()
-
     try:
-        curation_result = llm_client.generate_seed_tracks(prompt=prompt, user_profile=user_profile)
+        llm_client = get_llm_client()
+        curation_result = llm_client.generate_seed_tracks(
+            prompt=prompt, user_profile=user_profile
+        )
+        search_queries = music_service.prepare_catalog_search_queries(
+            curation_result.seeds
+        )
+
+        return (
+            jsonify(
+                {
+                    "prompt": curation_result.prompt,
+                    "curator_summary": curation_result.curator_summary,
+                    "seeds": [seed.model_dump() for seed in curation_result.seeds],
+                    "catalog_queries": search_queries,
+                }
+            ),
+            200,
+        )
     except Exception as e:
-        logger.error(f"LLM curation provider error ({e}). Falling back to Mock curation.", exc_info=True)
-        fallback_client = MockLLMClient()
-        curation_result = fallback_client.generate_seed_tracks(prompt=prompt, user_profile=user_profile)
+        logger.error(f"LLM curation provider error: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to curate music: {str(e)}"}), 500
 
-    search_queries = music_service.prepare_catalog_search_queries(curation_result.seeds)
-
-    return jsonify({
-        "prompt": curation_result.prompt,
-        "curator_summary": curation_result.curator_summary,
-        "seeds": [seed.model_dump() for seed in curation_result.seeds],
-        "catalog_queries": search_queries
-    }), 200
 
 @curation_bp.route("/infinite-flow", methods=["POST"])
 def infinite_flow():
@@ -58,33 +65,30 @@ def infinite_flow():
     current_track = data.get("current_track")
     user_profile = data.get("user_profile")
 
-    llm_client = get_llm_client()
-
     try:
+        llm_client = get_llm_client()
         curation_result = llm_client.extend_infinite_queue(
             initial_prompt=initial_prompt,
             steer_history=steer_history,
             played_tracks=played_tracks,
             current_track=current_track,
-            user_profile=user_profile
+            user_profile=user_profile,
+        )
+        search_queries = music_service.prepare_catalog_search_queries(
+            curation_result.seeds
+        )
+
+        return (
+            jsonify(
+                {
+                    "prompt": curation_result.prompt,
+                    "curator_summary": curation_result.curator_summary,
+                    "seeds": [seed.model_dump() for seed in curation_result.seeds],
+                    "catalog_queries": search_queries,
+                }
+            ),
+            200,
         )
     except Exception as e:
-        logger.error(f"LLM infinite flow error ({e}). Falling back to Mock curation.", exc_info=True)
-        fallback_client = MockLLMClient()
-        curation_result = fallback_client.extend_infinite_queue(
-            initial_prompt=initial_prompt,
-            steer_history=steer_history,
-            played_tracks=played_tracks,
-            current_track=current_track,
-            user_profile=user_profile
-        )
-
-    search_queries = music_service.prepare_catalog_search_queries(curation_result.seeds)
-
-    return jsonify({
-        "prompt": curation_result.prompt,
-        "curator_summary": curation_result.curator_summary,
-        "seeds": [seed.model_dump() for seed in curation_result.seeds],
-        "catalog_queries": search_queries
-    }), 200
-
+        logger.error(f"LLM infinite flow error: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to extend infinite flow: {str(e)}"}), 500

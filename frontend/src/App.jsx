@@ -294,6 +294,7 @@ export default function App() {
               onSelectTrack={selectQueueTrack}
               onRemoveTrack={removeFromQueue}
               onSavePlaylist={handleSavePlaylist}
+              onConnectSpotify={login}
               isInfiniteFlow={isInfiniteFlow}
               onToggleInfiniteFlow={() => setIsInfiniteFlow((prev) => !prev)}
             />

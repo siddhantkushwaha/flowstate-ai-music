@@ -27,9 +27,10 @@ export function Header({ isAuthorized, backendStatus, onConnectSpotify, onOpenTa
 
         <button
           onClick={onConnectSpotify}
+          title={isAuthorized ? 'Spotify Connected. Click to reconnect / refresh permissions.' : 'Connect your Spotify account'}
           className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 shadow-lg ${
             isAuthorized
-              ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400 shadow-emerald-900/20'
+              ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400 shadow-emerald-900/20 hover:border-emerald-400/60'
               : 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 border-emerald-400/40 text-slate-950 shadow-emerald-500/25 active:scale-95'
           }`}
         >

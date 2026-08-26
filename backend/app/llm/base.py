@@ -2,22 +2,32 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
+
 class SeedTrack(BaseModel):
     artist: str = Field(..., description="Exact artist name")
     track_name: str = Field(..., description="Exact song title")
-    reasoning: str = Field(..., description="1-sentence explanation of why lyrics/vibes match")
-    vibe_tags: List[str] = Field(default_factory=list, description="Tags like energetic, melancholic, acoustic")
+    reasoning: str = Field(
+        ..., description="1-sentence explanation of why lyrics/vibes match"
+    )
+    vibe_tags: List[str] = Field(
+        default_factory=list, description="Tags like energetic, melancholic, acoustic"
+    )
+
 
 class CurationResult(BaseModel):
     prompt: str
     seeds: List[SeedTrack]
-    curator_summary: str = Field(..., description="Brief commentary on the theme of this session")
+    curator_summary: str = Field(
+        ..., description="Brief commentary on the theme of this session"
+    )
+
 
 class SteerResult(BaseModel):
     feedback: str
     added_seeds: List[SeedTrack]
     tracks_to_remove: List[str] = Field(default_factory=list)
     explanation: str
+
 
 class BaseLLMClient(ABC):
     """
@@ -48,9 +58,7 @@ class BaseLLMClient(ABC):
         pass
 
     @abstractmethod
-    def update_user_profile(
-        self, current_profile: str, positive_signal: str
-    ) -> str:
+    def update_user_profile(self, current_profile: str, positive_signal: str) -> str:
         """
         Updates the concise rolling text profile summarizing user tastes.
         """
@@ -83,4 +91,3 @@ class BaseLLMClient(ABC):
         strictly avoiding duplicate songs from played_tracks.
         """
         pass
-

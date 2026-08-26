@@ -1,10 +1,11 @@
 import json
 import logging
+import time
 from typing import List, Optional
-from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception
 from app.llm.base import BaseLLMClient, CurationResult, SeedTrack, SteerResult
 
 logger = logging.getLogger(__name__)
+
 
 def is_transient_error(exception: Exception) -> bool:
     """
@@ -12,34 +13,41 @@ def is_transient_error(exception: Exception) -> bool:
     """
     err_str = str(exception).lower()
     transient_keywords = [
-        "rate limit", "429", "resource_exhausted", "quota",
-        "500", "503", "unavailable", "overloaded", "timeout", "connection"
+        "rate limit",
+        "429",
+        "resource_exhausted",
+        "quota",
+        "500",
+        "503",
+        "unavailable",
+        "overloaded",
+        "timeout",
+        "connection",
     ]
     return any(kw in err_str for kw in transient_keywords)
+
 
 class GeminiLLMClient(BaseLLMClient):
     """
     Google Gemini & Gemma implementation for LLM curation using official google-genai SDK.
-    Includes exponential backoff retry logic and multi-tier model fallback.
+    Includes retry logic with sleep on the specified model.
     """
 
     def __init__(self, api_key: str, model: str = "gemma-2-27b-it"):
         self.api_key = api_key
         self.model_name = model
         from google import genai
+
         self.client = genai.Client(api_key=api_key)
 
-    @retry(
-        reraise=True,
-        stop=stop_after_attempt(3),
-        wait=wait_random_exponential(min=1, max=5),
-        retry=retry_if_exception(is_transient_error)
-    )
-    def _execute_model_call(self, model_name: str, contents: str, is_json: bool = True):
+    def _execute_model_call(
+        self, contents: str, is_json: bool = True, model_name: Optional[str] = None
+    ):
         from google.genai import types
 
+        target_model = model_name or self.model_name
         config_args = {}
-        if is_json and "gemma" not in model_name.lower():
+        if is_json and "gemma" not in target_model.lower():
             # Standard Gemini models support native JSON mode
             config_args["response_mime_type"] = "application/json"
             config_args["temperature"] = 0.85
@@ -48,35 +56,51 @@ class GeminiLLMClient(BaseLLMClient):
 
         config = types.GenerateContentConfig(**config_args)
         return self.client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=config
+            model=target_model, contents=contents, config=config
         )
 
-    def _call_with_fallback(self, contents: str, is_json: bool = True) -> str:
+    def _call_with_retry(
+        self,
+        contents: str,
+        is_json: bool = True,
+        max_retries: int = 3,
+        initial_delay: float = 2.0,
+    ) -> str:
         """
-        Executes call with primary model, falling back to secondary models if primary fails under load.
+        Executes call strictly with the specified model, retrying with sleep on failure.
         """
-        fallback_models = [self.model_name, "gemini-2.5-flash", "gemini-1.5-flash"]
-
-        # Deduplicate while preserving order
-        seen = set()
-        models_to_try = [m for m in fallback_models if not (m in seen or seen.add(m))]
-
+        delay = initial_delay
         last_exception = None
-        for m_name in models_to_try:
+        total_attempts = max_retries + 1
+
+        for attempt in range(1, total_attempts + 1):
             try:
-                logger.info(f"Attempting LLM call with model: {m_name}")
-                response = self._execute_model_call(m_name, contents, is_json)
+                logger.info(
+                    f"Attempting LLM call (attempt {attempt}/{total_attempts}) with model: {self.model_name}"
+                )
+                response = self._execute_model_call(contents=contents, is_json=is_json)
                 if response and response.text:
                     return response.text
+                raise RuntimeError(
+                    f"Empty response received from model '{self.model_name}'"
+                )
             except Exception as e:
-                logger.warning(f"LLM model '{m_name}' failed after retries: {e}. Trying fallback model...")
                 last_exception = e
+                if attempt < total_attempts:
+                    logger.warning(
+                        f"LLM call to '{self.model_name}' failed on attempt {attempt}/{total_attempts}: {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    time.sleep(delay)
+                    delay *= 2.0
+                else:
+                    logger.error(
+                        f"LLM call to '{self.model_name}' failed after {total_attempts} attempts: {e}"
+                    )
 
         if last_exception:
             raise last_exception
-        raise RuntimeError("All LLM fallback models failed to respond.")
+        raise RuntimeError(f"LLM call to '{self.model_name}' failed.")
 
     def generate_seed_tracks(
         self, prompt: str, user_profile: Optional[str] = None
@@ -94,13 +118,13 @@ class GeminiLLMClient(BaseLLMClient):
             "{\n"
             '  "curator_summary": "Brief 1-sentence summary of the vibe and language theme",\n'
             '  "seeds": [\n'
-            '    {\n'
+            "    {\n"
             '      "artist": "Exact Artist/Singer Name",\n'
             '      "track_name": "Exact Song Title",\n'
             '      "reasoning": "1-sentence explanation of why lyrics/mood match the user request",\n'
             '      "vibe_tags": ["tag1", "tag2"]\n'
-            '    }\n'
-            '  ]\n'
+            "    }\n"
+            "  ]\n"
             "}\n"
         )
 
@@ -108,7 +132,7 @@ class GeminiLLMClient(BaseLLMClient):
         if user_profile:
             user_content += f"\nUser profile context: {user_profile}"
 
-        raw_text = self._call_with_fallback(user_content, is_json=True)
+        raw_text = self._call_with_retry(user_content, is_json=True)
 
         # Parse JSON output (strip markdown codeblocks if model wraps output)
         clean_json = raw_text.strip()
@@ -148,7 +172,7 @@ class GeminiLLMClient(BaseLLMClient):
         if recent_skips:
             user_content += f"Recently skipped tracks: {', '.join(recent_skips)}\n"
 
-        raw_text = self._call_with_fallback(user_content, is_json=True)
+        raw_text = self._call_with_retry(user_content, is_json=True)
 
         clean_json = raw_text.strip()
         if clean_json.startswith("```json"):
@@ -168,15 +192,13 @@ class GeminiLLMClient(BaseLLMClient):
             explanation=data.get("explanation", "Queue steered successfully."),
         )
 
-    def update_user_profile(
-        self, current_profile: str, positive_signal: str
-    ) -> str:
+    def update_user_profile(self, current_profile: str, positive_signal: str) -> str:
         prompt = (
             f"Current user music preference summary: '{current_profile}'\n"
             f"User just saved/liked track: '{positive_signal}'.\n"
             "Update the summary concisely in 1-2 sentences capturing their evolving taste and preferred languages."
         )
-        raw_text = self._call_with_fallback(prompt, is_json=False)
+        raw_text = self._call_with_retry(prompt, is_json=False)
         return raw_text.strip()
 
     def generate_steer_suggestions(
@@ -201,7 +223,7 @@ class GeminiLLMClient(BaseLLMClient):
         if user_profile:
             user_content += f"User Profile: {user_profile}\n"
 
-        raw_text = self._call_with_fallback(user_content, is_json=True)
+        raw_text = self._call_with_retry(user_content, is_json=True)
         clean_json = raw_text.strip()
         if clean_json.startswith("```json"):
             clean_json = clean_json[7:]
@@ -219,7 +241,7 @@ class GeminiLLMClient(BaseLLMClient):
             "Increase Energy & BPM",
             "Soften & Go Acoustic",
             "Shift Era / Nostalgic",
-            "More Heavy Bass & Beats"
+            "More Heavy Bass & Beats",
         ]
 
     def extend_infinite_queue(
@@ -243,13 +265,13 @@ class GeminiLLMClient(BaseLLMClient):
             "{\n"
             '  "curator_summary": "Brief 1-sentence description of this queue extension",\n'
             '  "seeds": [\n'
-            '    {\n'
+            "    {\n"
             '      "artist": "Exact Artist Name",\n'
             '      "track_name": "Exact Song Title",\n'
             '      "reasoning": "1-sentence explanation of how this naturally continues the session flow",\n'
             '      "vibe_tags": ["tag1", "tag2"]\n'
-            '    }\n'
-            '  ]\n'
+            "    }\n"
+            "  ]\n"
             "}\n"
         )
 
@@ -257,13 +279,15 @@ class GeminiLLMClient(BaseLLMClient):
         if current_track:
             user_content += f"\nCurrently Playing: {current_track}"
         if steer_history:
-            user_content += f"\nSteers/Vibe Adjustments Applied: {', '.join(steer_history)}"
+            user_content += (
+                f"\nSteers/Vibe Adjustments Applied: {', '.join(steer_history)}"
+            )
         if played_tracks:
             user_content += f"\nPlayed/Queued Tracks (DO NOT REPEAT): {', '.join(played_tracks[-30:])}"
         if user_profile:
             user_content += f"\nUser Profile Context: {user_profile}"
 
-        raw_text = self._call_with_fallback(user_content, is_json=True)
+        raw_text = self._call_with_retry(user_content, is_json=True)
 
         clean_json = raw_text.strip()
         if clean_json.startswith("```json"):
@@ -276,7 +300,10 @@ class GeminiLLMClient(BaseLLMClient):
 
         data = json.loads(clean_json or "{}")
         seeds = [SeedTrack(**s) for s in data.get("seeds", [])]
-        summary = data.get("curator_summary", f"Infinite flow continuation for '{initial_prompt}'")
+        summary = data.get(
+            "curator_summary", f"Infinite flow continuation for '{initial_prompt}'"
+        )
 
-        return CurationResult(prompt=initial_prompt, seeds=seeds, curator_summary=summary)
-
+        return CurationResult(
+            prompt=initial_prompt, seeds=seeds, curator_summary=summary
+        )

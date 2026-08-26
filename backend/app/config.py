@@ -8,16 +8,19 @@ if os.path.exists(root_env):
 else:
     load_dotenv()
 
+
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
-    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower() # 'gemini', 'ollama', 'mock'
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()  # 'gemini', 'ollama'
 
     # Google Gemini Configuration
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-2-27b-it")
 
     # Spotify Configuration for frontend client discovery
-    SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", os.getenv("VITE_SPOTIFY_CLIENT_ID", ""))
+    SPOTIFY_CLIENT_ID = os.getenv(
+        "SPOTIFY_CLIENT_ID", os.getenv("VITE_SPOTIFY_CLIENT_ID", "")
+    )
 
     # Ollama Local LLM Configuration
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")

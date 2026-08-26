@@ -31,8 +31,7 @@ Key invariants:
 - Framework: Python 3.11+, Flask, Gunicorn.
 - LLM Provider Hierarchy:
   - `BaseLLMClient` (`app/llm/base.py`): Abstract base class defining `generate_seed_tracks`, `steer_queue`, `update_user_profile`, and `generate_steer_suggestions`.
-  - `GeminiLLMClient` (`app/llm/gemini_client.py`): Primary cloud provider utilizing `google-genai` SDK with automatic retry logic and fallback models (`gemma-2-27b-it` -> `gemini-2.5-flash` -> `gemini-1.5-flash`).
-  - `MockLLMClient` (`app/llm/mock_client.py`): Deterministic fallback provider supporting Hindi, workout, chill, and pop music queries for offline operation or sandboxed environments.
+  - `GeminiLLMClient` (`app/llm/gemini_client.py`): Primary cloud provider utilizing `google-genai` SDK with automatic retry logic and sleep backoff on the specified model.
   - `OllamaLLMClient` (`app/llm/ollama_client.py`): Local open-source model provider connecting to Ollama REST API.
 - Endpoints:
   - `POST /api/curate`: Translates natural language prompt into structured seed tracks and catalog search queries.
