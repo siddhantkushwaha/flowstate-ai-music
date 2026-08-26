@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+**/node_modules/
+venv/
+backend/venv/
+**/venv/
+
+# Environment Variables
+.env
+backend/.env
+frontend/.env
+**/.env
+
+# Build Outputs
+dist/
+frontend/dist/
+**/dist/
+.vite/
+frontend/.vite/
+**/.vite/
+
+# System & IDE files
+.DS_Store
+*.log
+.vscode/
+.idea/
