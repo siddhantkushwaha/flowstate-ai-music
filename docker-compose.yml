@@ -19,8 +19,6 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemma-2-27b-it}
     env_file:
-      - path: backend/.env
-        required: false
-      - path: frontend/.env
+      - path: .env
         required: false
     restart: unless-stopped

@@ -31,6 +31,12 @@ def create_app(config_class=Config):
             "llm_provider": app.config.get("LLM_PROVIDER")
         }), 200
 
+    @app.route("/api/config", methods=["GET"])
+    def client_config():
+        return jsonify({
+            "spotify_client_id": app.config.get("SPOTIFY_CLIENT_ID", "")
+        }), 200
+
     if os.path.exists(static_dist):
         @app.route("/", defaults={"path": ""})
         @app.route("/<path:path>")

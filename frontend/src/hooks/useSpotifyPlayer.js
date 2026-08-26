@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getStoredSpotifyToken, redirectToSpotifyOAuth, exchangeCodeForToken, logoutSpotify } from '../services/spotifyAuth';
+import { fetchClientConfig } from '../services/api';
 
 const SPOTIFY_CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID || '';
 
 export function useSpotifyPlayer() {
   const [token, setToken] = useState(getStoredSpotifyToken());
+  const [clientId, setClientId] = useState(SPOTIFY_CLIENT_ID);
   const [player, setPlayer] = useState(null);
   const [deviceId, setDeviceId] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -16,6 +18,15 @@ export function useSpotifyPlayer() {
   const [isInfiniteFlow, setIsInfiniteFlowState] = useState(() => {
     return localStorage.getItem('flowstate_infinite_flow') === 'true';
   });
+
+  // Fetch backend runtime config on mount
+  useEffect(() => {
+    fetchClientConfig().then((cfg) => {
+      if (cfg && cfg.spotify_client_id) {
+        setClientId(cfg.spotify_client_id);
+      }
+    });
+  }, []);
 
   const setIsInfiniteFlow = useCallback((val) => {
     const nextVal = typeof val === 'function' ? val(isInfiniteFlowRef.current) : val;
@@ -39,12 +50,25 @@ export function useSpotifyPlayer() {
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get('code');
-    if (code && SPOTIFY_CLIENT_ID) {
-      exchangeCodeForToken(SPOTIFY_CLIENT_ID, code)
-        .then((newToken) => setToken(newToken))
-        .catch((err) => console.error('Spotify OAuth Code exchange error:', err));
+    if (code) {
+      const handleExchange = async () => {
+        let activeId = clientId || SPOTIFY_CLIENT_ID;
+        if (!activeId) {
+          const cfg = await fetchClientConfig();
+          if (cfg && cfg.spotify_client_id) activeId = cfg.spotify_client_id;
+        }
+        if (activeId) {
+          try {
+            const newToken = await exchangeCodeForToken(activeId, code);
+            setToken(newToken);
+          } catch (err) {
+            console.error('Spotify OAuth Code exchange error:', err);
+          }
+        }
+      };
+      handleExchange();
     }
-  }, []);
+  }, [clientId]);
 
   // Inspect Spotify User Profile Tier (Premium vs Free)
   useEffect(() => {
@@ -149,7 +173,18 @@ export function useSpotifyPlayer() {
     return () => clearInterval(interval);
   }, [isPlaying, durationMs]);
 
-  const login = useCallback(() => { redirectToSpotifyOAuth(SPOTIFY_CLIENT_ID); }, []);
+  const login = useCallback(async () => {
+    let activeId = clientId || SPOTIFY_CLIENT_ID;
+    if (!activeId) {
+      const cfg = await fetchClientConfig();
+      if (cfg && cfg.spotify_client_id) activeId = cfg.spotify_client_id;
+    }
+    if (!activeId) {
+      alert('Missing Spotify Client ID. Set SPOTIFY_CLIENT_ID in your .env file.');
+      return;
+    }
+    redirectToSpotifyOAuth(activeId);
+  }, [clientId]);
 
   const logout = useCallback(() => {
     logoutSpotify();

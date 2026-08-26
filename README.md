@@ -19,23 +19,24 @@ Flowstate is an AI-powered music curation player and Progressive Web App (PWA). 
    - If your Spotify app is in Development Mode, add your Spotify email under "Users and Access".
 3. **LLM API Key (Optional)**: Google Gemini API key (from Google AI Studio). The app automatically falls back to an offline mock client if an API key is not supplied.
 
-## Environment Configuration
+## Environment Configuration (`.env`)
 
-### Backend (`backend/.env`)
+Copy the `.env.example` template to `.env` at the project root:
 
 ```env
-PORT=5050
-FLASK_ENV=development
+# Spotify Developer Client ID (from developer.spotify.com/dashboard)
+SPOTIFY_CLIENT_ID=your_spotify_client_id_here
+
+# LLM Provider Configuration ('gemini', 'ollama', or 'mock')
 LLM_PROVIDER=gemini
+
+# Google Gemini API Key (from aistudio.google.com/app/apikey)
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemma-2-27b-it
-```
 
-### Frontend (`frontend/.env`)
-
-```env
-VITE_SPOTIFY_CLIENT_ID=your_spotify_client_id_here
-VITE_API_BASE_URL=http://localhost:5050
+# Ollama Local LLM Configuration (if LLM_PROVIDER=ollama)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3
 ```
 
 ## Running Locally

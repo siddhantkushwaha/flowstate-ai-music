@@ -8,6 +8,19 @@ const getApiBase = () => {
 
 const API_BASE = getApiBase();
 
+export async function fetchClientConfig() {
+  try {
+    const res = await fetch(`${API_BASE}/config`);
+    if (res.ok) return await res.json();
+  } catch (e) {
+    try {
+      const fallbackRes = await fetch('/api/config');
+      if (fallbackRes.ok) return await fallbackRes.json();
+    } catch {}
+  }
+  return {};
+}
+
 export async function curateVibe(prompt, userProfile = '') {
   let response;
   try {
