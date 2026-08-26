@@ -1,3 +1,6 @@
+import os
+from dotenv import load_dotenv
+
 # Load root .env first, fallback to standard locations
 root_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.env"))
 if os.path.exists(root_env):

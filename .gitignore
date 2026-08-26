@@ -1,3 +1,11 @@
+# Python Bytecode & Cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
 # Dependencies
 node_modules/
 frontend/node_modules/
