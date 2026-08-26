@@ -2,6 +2,10 @@ const getApiBase = () => {
   if (import.meta.env.VITE_API_BASE_URL) {
     return `${import.meta.env.VITE_API_BASE_URL}/api`;
   }
+  // In production, or when loaded over HTTPS, request API relatively from the same origin to avoid Mixed Content errors.
+  if (import.meta.env.PROD || (typeof window !== 'undefined' && window.location.protocol === 'https:')) {
+    return '/api';
+  }
   const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
   return `http://${host}:5050/api`;
 };
