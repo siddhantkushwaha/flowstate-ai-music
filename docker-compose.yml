@@ -11,7 +11,7 @@ services:
     image: flowstate-ai-music:latest
     container_name: flowstate_app
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     environment:
       - PORT=3000
       - FLASK_ENV=production
