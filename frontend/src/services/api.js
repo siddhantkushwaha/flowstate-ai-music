@@ -73,11 +73,14 @@ export async function fetchHistory() {
   }
 }
 
-export async function createHistoryEntry({ prompt, curatorSummary, tracks }) {
+// Upserts by (user, prompt) on the backend - safe to call on every queue
+// modification (steer, Infinite Flow addition, track removal), not just the
+// initial save. Always sends the session's full current state.
+export async function saveHistoryEntry({ prompt, curatorSummary, tracks, steerHistory = [] }) {
   try {
     const response = await apiRequest('/history', {
       method: 'POST',
-      body: JSON.stringify({ prompt, curator_summary: curatorSummary, tracks }),
+      body: JSON.stringify({ prompt, curator_summary: curatorSummary, tracks, steer_history: steerHistory }),
     });
     if (!response.ok) return null;
     const data = await response.json();
@@ -85,19 +88,6 @@ export async function createHistoryEntry({ prompt, curatorSummary, tracks }) {
   } catch (e) {
     console.warn('[API] Failed to save history entry:', e);
     return null;
-  }
-}
-
-export async function patchHistoryEntry(id, { steerText, addedTracks }) {
-  try {
-    const response = await apiRequest(`/history/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ steer_text: steerText, added_tracks: addedTracks }),
-    });
-    return response.ok;
-  } catch (e) {
-    console.warn('[API] Failed to patch history entry:', e);
-    return false;
   }
 }
 

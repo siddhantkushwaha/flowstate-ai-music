@@ -23,19 +23,23 @@ def list_history():
 
 @history_bp.route("/history", methods=["POST"])
 @require_session
-def create_history():
+def upsert_history():
     """
     POST /api/history
-    Body: { "prompt": "...", "curator_summary": "...", "tracks": [resolved track objects] }
+    Body: { "prompt": "...", "curator_summary": "...", "tracks": [...], "steer_history": [...] }
 
-    Called once per curated session, the moment the frontend's 30s played
-    threshold is crossed - tracks are already-resolved playable items, not
-    LLM seeds, so a later resume needs no LLM call or catalog search.
+    Upserts by (user, normalized prompt): the frontend sends the session's
+    current full state - tracks are already-resolved playable items, not LLM
+    seeds, so a later resume needs no LLM call or catalog search. Called once
+    the frontend's 30s played threshold is first crossed, and again on every
+    subsequent queue modification (steering, Infinite Flow additions, track
+    removal) so the saved entry always reflects what's actually in the queue.
     """
     data = request.get_json() or {}
     prompt = data.get("prompt", "").strip()
     curator_summary = data.get("curator_summary")
     tracks = data.get("tracks", [])
+    steer_history = data.get("steer_history", [])
 
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
@@ -43,29 +47,8 @@ def create_history():
         return jsonify({"error": "tracks must be a non-empty list"}), 400
 
     store = _get_history_store()
-    session_id = store.create(g.spotify_user_id, prompt, curator_summary, tracks)
-    return jsonify({"id": session_id}), 201
-
-
-@history_bp.route("/history/<session_id>", methods=["PATCH"])
-@require_session
-def patch_history(session_id):
-    """
-    PATCH /api/history/<id>
-    Body: { "steer_text": "...", "added_tracks": [resolved track objects] }
-
-    Appends a steer's feedback text and newly added tracks to an already-saved
-    session, matching the app's "steering extends the same queue" model.
-    """
-    data = request.get_json() or {}
-    steer_text = data.get("steer_text")
-    added_tracks = data.get("added_tracks", [])
-
-    store = _get_history_store()
-    found = store.patch(session_id, g.spotify_user_id, steer_text, added_tracks)
-    if not found:
-        return jsonify({"error": "History entry not found"}), 404
-    return jsonify({"ok": True}), 200
+    session_id = store.upsert(g.spotify_user_id, prompt, curator_summary, tracks, steer_history)
+    return jsonify({"id": session_id}), 200
 
 
 @history_bp.route("/history/<session_id>", methods=["DELETE"])

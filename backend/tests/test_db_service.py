@@ -64,10 +64,10 @@ def test_taste_profile_set_overwrites_and_is_scoped_per_user(tmp_path):
     assert store.get("user2") == "other user's profile"
 
 
-def test_history_create_and_list(tmp_path):
+def test_history_upsert_and_list(tmp_path):
     db_path = str(tmp_path / "flowstate.sqlite3")
     store = CurationHistoryStore(db_path, retention_seconds=3600)
-    session_id = store.create("user1", "chill study vibes", "Chill mix", [{"id": "t1"}])
+    session_id = store.upsert("user1", "chill study vibes", "Chill mix", [{"id": "t1"}], [])
 
     entries = store.list("user1")
     assert len(entries) == 1
@@ -80,8 +80,8 @@ def test_history_create_and_list(tmp_path):
 def test_history_list_is_scoped_per_user(tmp_path):
     db_path = str(tmp_path / "flowstate.sqlite3")
     store = CurationHistoryStore(db_path, retention_seconds=3600)
-    store.create("user1", "prompt A", "summary", [{"id": "t1"}])
-    store.create("user2", "prompt B", "summary", [{"id": "t2"}])
+    store.upsert("user1", "prompt A", "summary", [{"id": "t1"}], [])
+    store.upsert("user2", "prompt B", "summary", [{"id": "t2"}], [])
 
     assert len(store.list("user1")) == 1
     assert store.list("user1")[0]["prompt"] == "prompt A"
@@ -92,38 +92,42 @@ def test_history_list_is_scoped_per_user(tmp_path):
 def test_history_respects_retention(tmp_path):
     db_path = str(tmp_path / "flowstate.sqlite3")
     store = CurationHistoryStore(db_path, retention_seconds=1)
-    store.create("user1", "old prompt", "summary", [{"id": "t1"}])
+    store.upsert("user1", "old prompt", "summary", [{"id": "t1"}], [])
     assert len(store.list("user1")) == 1
     time.sleep(1.2)
     assert store.list("user1") == []
 
 
-def test_history_patch_appends_tracks_and_steer_text(tmp_path):
+def test_history_upsert_same_prompt_updates_existing_row_in_place(tmp_path):
     db_path = str(tmp_path / "flowstate.sqlite3")
     store = CurationHistoryStore(db_path, retention_seconds=3600)
-    session_id = store.create("user1", "prompt", "summary", [{"id": "t1"}])
+    session_id = store.upsert("user1", "prompt", "summary", [{"id": "t1"}], [])
 
-    found = store.patch(session_id, "user1", "more energy", [{"id": "t2"}])
-    assert found is True
+    # A later queue modification (steer, Infinite Flow addition, etc.) for the
+    # same prompt should update the same row, not create a second one.
+    same_id = store.upsert("user1", "prompt", "summary", [{"id": "t1"}, {"id": "t2"}], ["more energy"])
+    assert same_id == session_id
 
     entries = store.list("user1")
+    assert len(entries) == 1
     assert entries[0]["tracks"] == [{"id": "t1"}, {"id": "t2"}]
     assert entries[0]["steer_history"] == ["more energy"]
 
 
-def test_history_patch_returns_false_for_missing_or_wrong_user(tmp_path):
+def test_history_upsert_normalizes_prompt_for_matching(tmp_path):
     db_path = str(tmp_path / "flowstate.sqlite3")
     store = CurationHistoryStore(db_path, retention_seconds=3600)
-    session_id = store.create("user1", "prompt", "summary", [{"id": "t1"}])
+    session_id = store.upsert("user1", "Chill Vibes", "summary", [{"id": "t1"}], [])
+    same_id = store.upsert("user1", "  chill   vibes ", "summary", [{"id": "t1"}, {"id": "t2"}], [])
 
-    assert store.patch("nonexistent-id", "user1", "text", []) is False
-    assert store.patch(session_id, "user2", "text", []) is False
+    assert same_id == session_id
+    assert len(store.list("user1")) == 1
 
 
 def test_history_delete_is_scoped_per_user(tmp_path):
     db_path = str(tmp_path / "flowstate.sqlite3")
     store = CurationHistoryStore(db_path, retention_seconds=3600)
-    session_id = store.create("user1", "prompt", "summary", [{"id": "t1"}])
+    session_id = store.upsert("user1", "prompt", "summary", [{"id": "t1"}], [])
 
     assert store.delete(session_id, "user2") is False
     assert store.delete(session_id, "user1") is True

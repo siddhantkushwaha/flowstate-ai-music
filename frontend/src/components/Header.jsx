@@ -1,7 +1,7 @@
 import React from 'react';
-import { Waves, ShieldCheck, Disc, Sparkles, LogOut } from 'lucide-react';
+import { Waves, ShieldCheck, Disc, LogOut } from 'lucide-react';
 
-export function Header({ isAuthorized, backendStatus, onConnectSpotify, onOpenTasteProfile, onLogout }) {
+export function Header({ isAuthorized, backendStatus, onConnectSpotify, onLogout }) {
   return (
     <header className="px-4 sm:px-8 pb-3.5 safe-top border-b border-white/5 glass-panel sticky top-0 z-40 flex items-center justify-between shadow-2xl">
       {/* Brand */}
@@ -16,15 +16,6 @@ export function Header({ isAuthorized, backendStatus, onConnectSpotify, onOpenTa
 
       {/* Connection & Actions */}
       <div className="flex items-center gap-2.5">
-        <button
-          onClick={onOpenTasteProfile}
-          className="p-2 rounded-xl glass-card text-slate-300 hover:text-emerald-400 hover:border-emerald-500/30 transition-all flex items-center gap-1.5 text-xs font-medium"
-          title="View taste profile"
-        >
-          <Sparkles className="w-4 h-4 text-emerald-400" />
-          <span className="hidden md:inline">Taste Profile</span>
-        </button>
-
         <button
           onClick={onConnectSpotify}
           title={isAuthorized ? 'Spotify Connected. Click to reconnect / refresh permissions.' : 'Connect your Spotify account'}

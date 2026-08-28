@@ -12,7 +12,7 @@ import { useSpotifyPlayer } from './hooks/useSpotifyPlayer';
 import { useMediaSession } from './hooks/useMediaSession';
 import {
   curateVibe, steerQueue, updateUserProfile, fetchSteerSuggestions, fetchInfiniteFlowTracks, checkBackendHealth,
-  fetchUserProfile, fetchHistory, createHistoryEntry, patchHistoryEntry, deleteHistoryEntry,
+  fetchUserProfile, fetchHistory, saveHistoryEntry, deleteHistoryEntry,
 } from './services/api';
 
 // How long a freshly curated queue must play continuously (on its first
@@ -68,7 +68,9 @@ export default function App() {
   const isExtendingRef = useRef(false);
   const lastExtendQueueLengthRef = useRef(-1);
   const currentHistoryIdRef = useRef(null);
-  const historySavedForQueueRef = useRef(false);
+  // True once the current top-level session has crossed the played
+  // threshold (or was resumed from history) - gates every history write.
+  const historyEligibleRef = useRef(false);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -98,30 +100,42 @@ export default function App() {
     fetchHistory().then(setHistory);
   }, [isAuthorized]);
 
-  const saveCurrentSessionToHistory = useCallback(async () => {
-    if (historySavedForQueueRef.current || queue.length === 0) return;
+  // Upserts the session's full current state to history (backend keys by
+  // user + prompt) - a no-op until historyEligibleRef is set. Safe to call
+  // on every queue modification, not just the initial save.
+  const syncSessionToHistory = useCallback(async () => {
+    if (!historyEligibleRef.current || queue.length === 0) return;
     const prompt = initialPrompt || lastPrompt;
     if (!prompt) return;
-    historySavedForQueueRef.current = true;
-    const id = await createHistoryEntry({ prompt, curatorSummary, tracks: queue });
-    if (!id) { historySavedForQueueRef.current = false; return; }
+    const id = await saveHistoryEntry({ prompt, curatorSummary, tracks: queue, steerHistory });
+    if (!id) return;
     currentHistoryIdRef.current = id;
     setHistory((prev) => [
-      { id, prompt, curator_summary: curatorSummary, tracks: queue, steer_history: [], updated_at: Date.now() / 1000 },
-      ...prev,
+      { id, prompt, curator_summary: curatorSummary, tracks: queue, steer_history: steerHistory, updated_at: Date.now() / 1000 },
+      ...prev.filter((h) => h.id !== id),
     ]);
-  }, [queue, initialPrompt, lastPrompt, curatorSummary]);
+  }, [queue, initialPrompt, lastPrompt, curatorSummary, steerHistory]);
 
-  // Save a curated session to history once its first track has played
+  // First save: once the current session's first track has played
   // continuously for HISTORY_SAVE_THRESHOLD_MS - filters out prompts that
   // were never actually listened to.
   useEffect(() => {
-    if (!isAuthorized || !isPlaying || currentIndex !== 0 || queue.length === 0 || historySavedForQueueRef.current) {
+    if (!isAuthorized || !isPlaying || currentIndex !== 0 || queue.length === 0 || historyEligibleRef.current) {
       return;
     }
-    const timer = setTimeout(saveCurrentSessionToHistory, HISTORY_SAVE_THRESHOLD_MS);
+    const timer = setTimeout(() => {
+      historyEligibleRef.current = true;
+      syncSessionToHistory();
+    }, HISTORY_SAVE_THRESHOLD_MS);
     return () => clearTimeout(timer);
-  }, [isAuthorized, isPlaying, currentIndex, queue.length, saveCurrentSessionToHistory]);
+  }, [isAuthorized, isPlaying, currentIndex, queue.length, syncSessionToHistory]);
+
+  // Keep an already-saved session in sync with the live queue - steering,
+  // Infinite Flow additions, and track removal should all be reflected in
+  // its history entry, not just the initial save.
+  useEffect(() => {
+    syncSessionToHistory();
+  }, [syncSessionToHistory]);
 
   // How many tracks must remain in the queue before we start prefetching the
   // next batch. Triggering only on the very last track meant playback caught
@@ -204,7 +218,7 @@ export default function App() {
     setLastPrompt(promptText);
     setSteerHistory([]);
     currentHistoryIdRef.current = null;
-    historySavedForQueueRef.current = false;
+    historyEligibleRef.current = false;
     try {
       const data = await curateVibe(promptText, userProfile);
       setCuratorSummary(data.curator_summary);
@@ -241,13 +255,12 @@ export default function App() {
       );
 
       if (data.catalog_queries && data.catalog_queries.length > 0) {
-        const addedTracks = await appendSteeredSeeds(data.catalog_queries);
+        await appendSteeredSeeds(data.catalog_queries);
         const newTrackNames = data.catalog_queries.map((q) => `${q.artist} - ${q.track_name}`);
         setPlayedTracks((prev) => [...prev, ...newTrackNames]);
         showToast(`Added ${data.catalog_queries.length} steered track(s) to queue!`);
-        if (currentHistoryIdRef.current && addedTracks && addedTracks.length > 0) {
-          patchHistoryEntry(currentHistoryIdRef.current, { steerText: feedbackText, addedTracks });
-        }
+        // History sync happens automatically (see syncSessionToHistory effect)
+        // once the queue state above updates.
       }
       // Refresh suggestions
       updateSuggestions(lastPrompt, currentTrack, queue);
@@ -316,7 +329,7 @@ export default function App() {
     setSteerHistory(entry.steer_history || []);
     setPlayedTracks((entry.tracks || []).map((t) => `${t.artistName || ''} - ${t.name || ''}`));
     currentHistoryIdRef.current = entry.id;
-    historySavedForQueueRef.current = true; // already saved - don't re-save on resume
+    historyEligibleRef.current = true; // already saved - further edits should sync, not gate on 30s again
     await loadAndPlayQueue(entry.tracks || []);
   };
 
@@ -331,14 +344,19 @@ export default function App() {
     setCuratorSummary('');
     setLikedTrackIds([]);
     currentHistoryIdRef.current = null;
-    historySavedForQueueRef.current = false;
+    historyEligibleRef.current = false;
   };
 
   const handleDeleteHistory = async (id) => {
     const ok = await deleteHistoryEntry(id);
     if (ok) {
       setHistory((prev) => prev.filter((h) => h.id !== id));
-      if (currentHistoryIdRef.current === id) currentHistoryIdRef.current = null;
+      if (currentHistoryIdRef.current === id) {
+        // Deleting the entry for the session that's still live: stop
+        // auto-syncing it, or the next queue change would just recreate it.
+        currentHistoryIdRef.current = null;
+        historyEligibleRef.current = false;
+      }
     } else {
       showToast('Failed to delete history entry.');
     }
@@ -360,7 +378,6 @@ export default function App() {
         isAuthorized={isAuthorized}
         backendStatus={backendStatus}
         onConnectSpotify={login}
-        onOpenTasteProfile={() => setIsTasteModalOpen(true)}
         onLogout={handleLogout}
       />
 
@@ -398,6 +415,7 @@ export default function App() {
               queue={queue}
               currentIndex={currentIndex}
               summary={curatorSummary}
+              prompt={initialPrompt || lastPrompt}
               onSelectTrack={selectQueueTrack}
               onRemoveTrack={removeFromQueue}
               onSavePlaylist={handleSavePlaylist}

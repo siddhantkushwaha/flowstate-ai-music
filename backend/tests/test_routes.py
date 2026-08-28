@@ -226,7 +226,7 @@ def test_history_crud_roundtrip(client, tmp_path):
             json={"prompt": "chill vibes", "curator_summary": "Chill mix", "tracks": [{"id": "t1"}]},
             headers=headers,
         )
-        assert rv.status_code == 201
+        assert rv.status_code == 200
         session_id = rv.get_json()["id"]
 
         rv = client.get("/api/history", headers=headers)
@@ -235,28 +235,30 @@ def test_history_crud_roundtrip(client, tmp_path):
         assert entries[0]["id"] == session_id
         assert entries[0]["tracks"] == [{"id": "t1"}]
 
-        rv = client.patch(
-            f"/api/history/{session_id}",
-            json={"steer_text": "faster", "added_tracks": [{"id": "t2"}]},
+        # A later queue modification (steer, Infinite Flow addition, track
+        # removal) re-posts the session's full current state to the same
+        # prompt - it should update the existing row, not create a new one.
+        rv = client.post(
+            "/api/history",
+            json={
+                "prompt": "chill vibes",
+                "curator_summary": "Chill mix",
+                "tracks": [{"id": "t1"}, {"id": "t2"}],
+                "steer_history": ["faster"],
+            },
             headers=headers,
         )
         assert rv.status_code == 200
+        assert rv.get_json()["id"] == session_id
 
         entries = client.get("/api/history", headers=headers).get_json()["history"]
+        assert len(entries) == 1
         assert entries[0]["tracks"] == [{"id": "t1"}, {"id": "t2"}]
         assert entries[0]["steer_history"] == ["faster"]
 
         rv = client.delete(f"/api/history/{session_id}", headers=headers)
         assert rv.status_code == 200
         assert client.get("/api/history", headers=headers).get_json()["history"] == []
-
-
-def test_history_patch_missing_entry_returns_404(client, tmp_path):
-    with patch.object(Config, "DB_PATH", str(tmp_path / "flowstate.sqlite3")):
-        token = _get_session_token(client)
-        headers = {"Authorization": f"Bearer {token}"}
-        rv = client.patch("/api/history/does-not-exist", json={"steer_text": "x"}, headers=headers)
-        assert rv.status_code == 404
 
 
 def test_history_is_scoped_per_user(client, tmp_path):

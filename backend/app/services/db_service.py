@@ -39,6 +39,7 @@ def init_db(db_path: str) -> None:
             CREATE TABLE IF NOT EXISTS curated_sessions (
                 id TEXT PRIMARY KEY,
                 spotify_user_id TEXT NOT NULL,
+                prompt_key TEXT NOT NULL,
                 prompt TEXT NOT NULL,
                 curator_summary TEXT,
                 tracks TEXT NOT NULL,
@@ -48,8 +49,10 @@ def init_db(db_path: str) -> None:
             )
             """
         )
+        # One row per (user, prompt): re-curating or steering the same prompt
+        # updates the existing session in place instead of piling up rows.
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_curated_sessions_user ON curated_sessions(spotify_user_id)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_curated_sessions_user_prompt ON curated_sessions(spotify_user_id, prompt_key)"
         )
 
 
@@ -135,6 +138,19 @@ class CurationHistoryStore:
     Per-user history of curated sessions the user actually played, with lazy
     retention: rows older than retention_seconds are excluded at read time
     (same style as CurationCache) rather than proactively deleted.
+
+    Keyed by (user, normalized prompt) rather than an opaque session id the
+    caller must track: the caller always sends the session's current full
+    state (tracks, steer_history), so any queue modification - steering,
+    Infinite Flow additions, track removal - is just another upsert of the
+    same row, and re-curating an identical prompt later updates it in place
+    instead of piling up duplicate rows.
+
+    Known tradeoff: if the same account runs two parallel listening sessions
+    (e.g. phone and laptop) that curate the *same* prompt at the same time,
+    they'll upsert into the same row and the later write wins. Accepted as
+    fine since it's the same user's own data either way - not worth the
+    complexity of a per-device session id to avoid.
     """
 
     def __init__(self, db_path: str, retention_seconds: int):
@@ -142,60 +158,55 @@ class CurationHistoryStore:
         self.retention_seconds = retention_seconds
         init_db(db_path)
 
-    def create(
+    @staticmethod
+    def _normalize(prompt: str) -> str:
+        return " ".join(prompt.strip().lower().split())
+
+    def upsert(
         self,
         spotify_user_id: str,
         prompt: str,
         curator_summary: Optional[str],
         tracks: List[Dict[str, Any]],
+        steer_history: List[str],
     ) -> str:
-        session_id = uuid.uuid4().hex
+        prompt_key = self._normalize(prompt)
         now = time.time()
         with _write_lock, _connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO curated_sessions
-                    (id, spotify_user_id, prompt, curator_summary, tracks, steer_history, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    spotify_user_id,
-                    prompt,
-                    curator_summary,
-                    json.dumps(tracks),
-                    json.dumps([]),
-                    now,
-                    now,
-                ),
-            )
-        return session_id
-
-    def patch(
-        self,
-        session_id: str,
-        spotify_user_id: str,
-        steer_text: Optional[str],
-        added_tracks: Optional[List[Dict[str, Any]]],
-    ) -> bool:
-        with _write_lock, _connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT tracks, steer_history FROM curated_sessions WHERE id = ? AND spotify_user_id = ?",
-                (session_id, spotify_user_id),
+                "SELECT id FROM curated_sessions WHERE spotify_user_id = ? AND prompt_key = ?",
+                (spotify_user_id, prompt_key),
             ).fetchone()
-            if not row:
-                return False
-            tracks = json.loads(row[0])
-            steer_history = json.loads(row[1])
-            if added_tracks:
-                tracks.extend(added_tracks)
-            if steer_text:
-                steer_history.append(steer_text)
-            conn.execute(
-                "UPDATE curated_sessions SET tracks = ?, steer_history = ?, updated_at = ? WHERE id = ? AND spotify_user_id = ?",
-                (json.dumps(tracks), json.dumps(steer_history), time.time(), session_id, spotify_user_id),
-            )
-        return True
+            session_id = row[0] if row else uuid.uuid4().hex
+            if row:
+                conn.execute(
+                    """
+                    UPDATE curated_sessions
+                    SET prompt = ?, curator_summary = ?, tracks = ?, steer_history = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (prompt, curator_summary, json.dumps(tracks), json.dumps(steer_history), now, session_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO curated_sessions
+                        (id, spotify_user_id, prompt_key, prompt, curator_summary, tracks, steer_history, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        spotify_user_id,
+                        prompt_key,
+                        prompt,
+                        curator_summary,
+                        json.dumps(tracks),
+                        json.dumps(steer_history),
+                        now,
+                        now,
+                    ),
+                )
+        return session_id
 
     def list(self, spotify_user_id: str) -> List[Dict[str, Any]]:
         cutoff = time.time() - self.retention_seconds

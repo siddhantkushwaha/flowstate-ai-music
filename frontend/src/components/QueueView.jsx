@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ListMusic, Tag, Sparkles, X, BookmarkPlus, Check, Loader2, Infinity, Repeat } from 'lucide-react';
 
 export function QueueView({
   queue,
   currentIndex = 0,
   summary,
+  prompt = '',
   onSelectTrack,
   onRemoveTrack,
   onSavePlaylist,
@@ -12,9 +13,20 @@ export function QueueView({
   isInfiniteFlow = false,
   onToggleInfiniteFlow,
 }) {
-  const [playlistName, setPlaylistName] = useState('');
+  const [playlistName, setPlaylistName] = useState(prompt);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null); // { ok, created } | null
+
+  // Re-suggest the prompt as the name whenever it changes (new session /
+  // resumed history entry) - but only while the user hasn't typed their own
+  // name over it, so a fresh prompt doesn't clobber a deliberate edit.
+  const lastAutoFilledPromptRef = useRef(prompt);
+  useEffect(() => {
+    if (prompt === lastAutoFilledPromptRef.current) return;
+    const previousAutoFill = lastAutoFilledPromptRef.current;
+    lastAutoFilledPromptRef.current = prompt;
+    setPlaylistName((current) => (current === '' || current === previousAutoFill ? prompt : current));
+  }, [prompt]);
 
   if (!queue || queue.length === 0) return null;
 
