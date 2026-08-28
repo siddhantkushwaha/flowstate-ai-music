@@ -371,8 +371,19 @@ export function useSpotifyPlayer() {
     }
   };
 
-  // Search Spotify catalog for seed queries, build track objects
-  const resolveTracksFromQueries = async (catalogQueries) => {
+  // Same-song identity for dedup purposes - uri is the canonical Spotify
+  // track identifier, id as a fallback for items missing one.
+  const trackKey = (t) => t.uri || t.id || null;
+
+  // Search Spotify catalog for seed queries, build track objects. Skips any
+  // result that's already in existingTracks OR already resolved earlier in
+  // this same batch - the LLM/catalog search can both independently produce
+  // a track that's already queued (steering has no visibility into the
+  // queue at all, and Infinite Flow's "avoid repeats" is a prompt-level
+  // request, not a guarantee), so this is the one choke point all paths
+  // funnel through before a track becomes visible in the queue.
+  const resolveTracksFromQueries = async (catalogQueries, existingTracks = []) => {
+    const seenKeys = new Set(existingTracks.map(trackKey).filter(Boolean));
     const spotifyUris = [];
     const trackItems = [];
     for (const item of catalogQueries) {
@@ -385,6 +396,12 @@ export function useSpotifyPlayer() {
           const data = await res.json();
           const found = data.tracks?.items?.[0];
           if (found) {
+            const key = found.uri || found.id;
+            if (key && seenKeys.has(key)) {
+              console.log(`[Spotify SDK] Skipping duplicate track already queued: ${found.name}`);
+              continue;
+            }
+            if (key) seenKeys.add(key);
             spotifyUris.push(found.uri);
             trackItems.push({
               uid: `track-${found.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -446,7 +463,7 @@ export function useSpotifyPlayer() {
   const appendSteeredSeeds = useCallback(async (catalogQueries) => {
     if (!token) { alert('Please connect Spotify to stream music.'); return []; }
     console.log('[Spotify SDK] Appending steered tracks to queue:', catalogQueries);
-    const { trackItems } = await resolveTracksFromQueries(catalogQueries);
+    const { trackItems } = await resolveTracksFromQueries(catalogQueries, queueRef.current);
     if (trackItems.length === 0) return [];
     setQueue((prev) => [...prev, ...trackItems]);
     return trackItems;
