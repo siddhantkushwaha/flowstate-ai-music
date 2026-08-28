@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 
-export function useMediaSession({ currentTrack, isPlaying, onPlay, onPause, onSkipNext, onSkipPrevious }) {
+export function useMediaSession({ currentTrack, isPlaying, positionMs, durationMs, onPlay, onPause, onSkipNext, onSkipPrevious, onSeek }) {
   useEffect(() => {
     if (!('mediaSession' in navigator)) return;
 
@@ -23,11 +23,26 @@ export function useMediaSession({ currentTrack, isPlaying, onPlay, onPause, onSk
 
     navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
 
+    // Tells the OS where the scrubber sits and how long the track is, so the
+    // lock-screen seek bar actually renders and drags to the right place.
+    if (durationMs > 0 && navigator.mediaSession.setPositionState) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration: durationMs / 1000,
+          playbackRate: 1,
+          position: Math.min(positionMs / 1000, durationMs / 1000),
+        });
+      } catch (error) {
+        console.warn('MediaSession setPositionState failed:', error);
+      }
+    }
+
     const actionHandlers = [
       ['play', onPlay],
       ['pause', onPause],
       ['nexttrack', onSkipNext],
       ['previoustrack', onSkipPrevious],
+      ['seekto', onSeek ? (details) => onSeek(details.seekTime * 1000) : null],
     ];
 
     for (const [action, handler] of actionHandlers) {
@@ -41,5 +56,5 @@ export function useMediaSession({ currentTrack, isPlaying, onPlay, onPause, onSk
         console.warn(`MediaSession action ${action} not supported:`, error);
       }
     }
-  }, [currentTrack, isPlaying, onPlay, onPause, onSkipNext, onSkipPrevious]);
+  }, [currentTrack, isPlaying, positionMs, durationMs, onPlay, onPause, onSkipNext, onSkipPrevious, onSeek]);
 }

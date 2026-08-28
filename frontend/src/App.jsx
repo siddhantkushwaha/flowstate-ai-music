@@ -81,10 +81,13 @@ export default function App() {
   useMediaSession({
     currentTrack,
     isPlaying,
+    positionMs,
+    durationMs,
     onPlay: play,
     onPause: pause,
     onSkipNext: skipNext,
     onSkipPrevious: skipPrevious,
+    onSeek: seek,
   });
 
   useEffect(() => {
