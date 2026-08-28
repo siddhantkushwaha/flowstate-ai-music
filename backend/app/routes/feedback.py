@@ -1,11 +1,18 @@
 import logging
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, g, request, jsonify
+from app.auth import require_session
+from app.config import Config
 from app.llm import get_llm_client
+from app.services.db_service import TasteProfileStore
 from app.services.music_service import MusicService
 
 logger = logging.getLogger(__name__)
 feedback_bp = Blueprint("feedback", __name__)
 music_service = MusicService()
+
+
+def _get_profile_store() -> TasteProfileStore:
+    return TasteProfileStore(Config.DB_PATH)
 
 
 @feedback_bp.route("/steer", methods=["POST"])
@@ -50,7 +57,15 @@ def steer():
         return jsonify({"error": f"Failed to steer queue: {str(e)}"}), 500
 
 
+@feedback_bp.route("/profile", methods=["GET"])
+@require_session
+def get_profile():
+    store = _get_profile_store()
+    return jsonify({"profile": store.get(g.spotify_user_id)}), 200
+
+
 @feedback_bp.route("/profile", methods=["POST"])
+@require_session
 def update_profile():
     data = request.get_json() or {}
     current_profile = data.get("current_profile", "")
@@ -62,6 +77,7 @@ def update_profile():
     try:
         llm_client = get_llm_client()
         updated_profile = llm_client.update_user_profile(current_profile, liked_track)
+        _get_profile_store().set(g.spotify_user_id, updated_profile)
         return jsonify({"updated_profile": updated_profile}), 200
     except Exception as e:
         logger.error(f"LLM profile error: {e}", exc_info=True)

@@ -112,7 +112,7 @@ def test_curate_route_uses_lazy_cache(tmp_path):
     )
 
     with patch("app.routes.curation.get_llm_client", return_value=mock_llm), patch.object(
-        Config, "CACHE_DB_PATH", str(tmp_path / "cache.sqlite3")
+        Config, "DB_PATH", str(tmp_path / "flowstate.sqlite3")
     ):
         with app.test_client() as c:
             rv1 = c.post("/api/curate", json={"prompt": "Cached prompt test"})
@@ -169,3 +169,133 @@ def test_infinite_flow_route(client):
     assert "seeds" in json_data
     assert "catalog_queries" in json_data
     assert len(json_data["seeds"]) > 0
+
+
+def _mock_spotify_me_response(status_code=200, spotify_id="user123", display_name="Test User"):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = {"id": spotify_id, "display_name": display_name}
+    return resp
+
+
+def test_auth_session_route_valid_token(client):
+    with patch("app.routes.auth.requests.get", return_value=_mock_spotify_me_response()):
+        rv = client.post("/api/auth/session", json={"access_token": "valid-spotify-token"})
+    assert rv.status_code == 200
+    json_data = rv.get_json()
+    assert "session_token" in json_data
+    assert json_data["user"]["id"] == "user123"
+    assert json_data["user"]["display_name"] == "Test User"
+
+
+def test_auth_session_route_invalid_token(client):
+    with patch("app.routes.auth.requests.get", return_value=_mock_spotify_me_response(status_code=401)):
+        rv = client.post("/api/auth/session", json={"access_token": "bad-token"})
+    assert rv.status_code == 401
+
+
+def test_auth_session_route_missing_access_token(client):
+    rv = client.post("/api/auth/session", json={})
+    assert rv.status_code == 400
+
+
+def _get_session_token(client):
+    with patch("app.routes.auth.requests.get", return_value=_mock_spotify_me_response()):
+        rv = client.post("/api/auth/session", json={"access_token": "valid-spotify-token"})
+    return rv.get_json()["session_token"]
+
+
+def test_history_and_profile_routes_require_session(client):
+    assert client.get("/api/history").status_code == 401
+    assert client.post("/api/history", json={"prompt": "x", "tracks": [{"id": "t1"}]}).status_code == 401
+    assert client.get("/api/profile").status_code == 401
+    assert client.post("/api/profile", json={"liked_track": "x"}).status_code == 401
+
+
+def test_history_crud_roundtrip(client, tmp_path):
+    with patch.object(Config, "DB_PATH", str(tmp_path / "flowstate.sqlite3")):
+        token = _get_session_token(client)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        rv = client.get("/api/history", headers=headers)
+        assert rv.status_code == 200
+        assert rv.get_json()["history"] == []
+
+        rv = client.post(
+            "/api/history",
+            json={"prompt": "chill vibes", "curator_summary": "Chill mix", "tracks": [{"id": "t1"}]},
+            headers=headers,
+        )
+        assert rv.status_code == 201
+        session_id = rv.get_json()["id"]
+
+        rv = client.get("/api/history", headers=headers)
+        entries = rv.get_json()["history"]
+        assert len(entries) == 1
+        assert entries[0]["id"] == session_id
+        assert entries[0]["tracks"] == [{"id": "t1"}]
+
+        rv = client.patch(
+            f"/api/history/{session_id}",
+            json={"steer_text": "faster", "added_tracks": [{"id": "t2"}]},
+            headers=headers,
+        )
+        assert rv.status_code == 200
+
+        entries = client.get("/api/history", headers=headers).get_json()["history"]
+        assert entries[0]["tracks"] == [{"id": "t1"}, {"id": "t2"}]
+        assert entries[0]["steer_history"] == ["faster"]
+
+        rv = client.delete(f"/api/history/{session_id}", headers=headers)
+        assert rv.status_code == 200
+        assert client.get("/api/history", headers=headers).get_json()["history"] == []
+
+
+def test_history_patch_missing_entry_returns_404(client, tmp_path):
+    with patch.object(Config, "DB_PATH", str(tmp_path / "flowstate.sqlite3")):
+        token = _get_session_token(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        rv = client.patch("/api/history/does-not-exist", json={"steer_text": "x"}, headers=headers)
+        assert rv.status_code == 404
+
+
+def test_history_is_scoped_per_user(client, tmp_path):
+    with patch.object(Config, "DB_PATH", str(tmp_path / "flowstate.sqlite3")):
+        token_a = _get_session_token(client)
+
+        with patch(
+            "app.routes.auth.requests.get",
+            return_value=_mock_spotify_me_response(spotify_id="other-user", display_name="Other"),
+        ):
+            rv = client.post("/api/auth/session", json={"access_token": "other-token"})
+        token_b = rv.get_json()["session_token"]
+
+        client.post(
+            "/api/history",
+            json={"prompt": "user A prompt", "tracks": [{"id": "t1"}]},
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+
+        rv = client.get("/api/history", headers={"Authorization": f"Bearer {token_b}"})
+        assert rv.get_json()["history"] == []
+
+
+def test_profile_get_and_post_roundtrip(client, tmp_path):
+    with patch.object(Config, "DB_PATH", str(tmp_path / "flowstate.sqlite3")):
+        token = _get_session_token(client)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        rv = client.get("/api/profile", headers=headers)
+        assert rv.status_code == 200
+        assert rv.get_json()["profile"] == ""
+
+        rv = client.post(
+            "/api/profile",
+            json={"current_profile": "", "liked_track": "Tycho - A Walk"},
+            headers=headers,
+        )
+        assert rv.status_code == 200
+        assert rv.get_json()["updated_profile"] == "Updated profile preference."
+
+        rv = client.get("/api/profile", headers=headers)
+        assert rv.get_json()["profile"] == "Updated profile preference."

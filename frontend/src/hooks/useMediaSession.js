@@ -5,12 +5,11 @@ export function useMediaSession({ currentTrack, isPlaying, onPlay, onPause, onSk
     if (!('mediaSession' in navigator)) return;
 
     if (currentTrack) {
-      const title = currentTrack.attributes?.name || currentTrack.name || 'AI Music';
-      const artist = currentTrack.attributes?.artistName || currentTrack.artistName || 'AI Curator';
-      const album = currentTrack.attributes?.albumName || 'Natural Language Queue';
-      const artworkUrl = currentTrack.attributes?.artwork?.url
-        ? currentTrack.attributes.artwork.url.replace('{w}', '512').replace('{h}', '512')
-        : 'https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=512&auto=format&fit=crop&q=80';
+      const title = currentTrack.name || 'AI Music';
+      const artist = currentTrack.artistName || 'AI Curator';
+      const album = currentTrack.albumName || 'Natural Language Queue';
+      const artworkUrl = currentTrack.artwork?.url
+        || 'https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=512&auto=format&fit=crop&q=80';
 
       navigator.mediaSession.metadata = new MediaMetadata({
         title,

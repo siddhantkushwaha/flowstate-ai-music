@@ -2,7 +2,7 @@ import os
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from app.config import Config
-from app.routes import curation_bp, feedback_bp
+from app.routes import auth_bp, curation_bp, feedback_bp, history_bp
 
 
 def create_app(config_class=Config):
@@ -22,8 +22,10 @@ def create_app(config_class=Config):
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     # Register blueprints
+    app.register_blueprint(auth_bp, url_prefix="/api")
     app.register_blueprint(curation_bp, url_prefix="/api")
     app.register_blueprint(feedback_bp, url_prefix="/api")
+    app.register_blueprint(history_bp, url_prefix="/api")
 
     @app.route("/api/health", methods=["GET"])
     def health_check():

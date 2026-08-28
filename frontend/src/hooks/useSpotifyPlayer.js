@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getStoredSpotifyToken, redirectToSpotifyOAuth, exchangeCodeForToken, logoutSpotify } from '../services/spotifyAuth';
-import { fetchClientConfig } from '../services/api';
+import { getStoredSpotifyToken, getStoredAppSession, redirectToSpotifyOAuth, exchangeCodeForToken, logoutSpotify } from '../services/spotifyAuth';
+import { fetchClientConfig, establishAppSession } from '../services/api';
 
 const SPOTIFY_CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID || '';
 
 export function useSpotifyPlayer() {
-  const [token, setToken] = useState(getStoredSpotifyToken());
+  const [token, setToken] = useState(null);
   const [clientId, setClientId] = useState(SPOTIFY_CLIENT_ID);
   const [player, setPlayer] = useState(null);
   const [deviceId, setDeviceId] = useState(null);
@@ -27,6 +27,30 @@ export function useSpotifyPlayer() {
       }
     });
   }, []);
+
+  // Ties the app's identity to the verified Spotify login - only calls out
+  // if there isn't already a signed app session stored (e.g. from a prior
+  // login this browser already completed).
+  const establishSession = useCallback(async (accessToken) => {
+    if (getStoredAppSession()) return;
+    await establishAppSession(accessToken);
+  }, []);
+
+  // Resolve any stored Spotify token once the client ID is known, silently
+  // refreshing it if the access token has expired. Replaces the old
+  // synchronous "expired -> logged out" behavior.
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    (async () => {
+      const stored = await getStoredSpotifyToken(clientId);
+      if (!cancelled && stored) {
+        setToken(stored);
+        establishSession(stored);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [clientId, establishSession]);
 
   const setIsInfiniteFlow = useCallback((val) => {
     const nextVal = typeof val === 'function' ? val(isInfiniteFlowRef.current) : val;
@@ -61,6 +85,7 @@ export function useSpotifyPlayer() {
           try {
             const newToken = await exchangeCodeForToken(activeId, code);
             setToken(newToken);
+            establishSession(newToken);
           } catch (err) {
             console.error('Spotify OAuth Code exchange error:', err);
           }
@@ -68,7 +93,7 @@ export function useSpotifyPlayer() {
       };
       handleExchange();
     }
-  }, [clientId]);
+  }, [clientId, establishSession]);
 
   // Inspect Spotify User Profile Tier (Premium vs Free)
   useEffect(() => {
@@ -156,11 +181,71 @@ export function useSpotifyPlayer() {
     return () => { if (player) player.disconnect(); };
   }, [token]);
 
+  // The Web Playback SDK renders actual audio inside a hidden cross-origin
+  // iframe, so the OS/browser attaches the lock-screen Now Playing card and
+  // hardware media keys to THAT iframe (showing as "Spotify Embedded Player"
+  // with no artwork) instead of to this page's navigator.mediaSession.
+  // Anchoring a silent, looping <audio> element on this page and keeping it
+  // "playing" in lockstep with real playback makes this document the one
+  // with active audible media, so the OS attributes Now Playing (and
+  // next/previous key routing) here instead of the SDK's iframe.
+  const silentAnchorRef = useRef(null);
+  useEffect(() => {
+    const sampleRate = 8000;
+    const numSamples = sampleRate; // 1 second, looped
+    const buffer = new ArrayBuffer(44 + numSamples);
+    const view = new DataView(buffer);
+    const writeString = (offset, str) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate, true);
+    view.setUint16(32, 1, true);
+    view.setUint16(34, 8, true);
+    writeString(36, 'data');
+    view.setUint32(40, numSamples, true);
+    for (let i = 0; i < numSamples; i++) view.setUint8(44 + i, 128); // silence (8-bit PCM midpoint)
+
+    const blobUrl = URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+    const anchor = new Audio(blobUrl);
+    anchor.loop = true;
+    anchor.volume = 0;
+    silentAnchorRef.current = anchor;
+
+    return () => {
+      anchor.pause();
+      URL.revokeObjectURL(blobUrl);
+      silentAnchorRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const anchor = silentAnchorRef.current;
+    if (!anchor) return;
+    if (isPlaying) {
+      anchor.play().catch(() => {});
+    } else {
+      anchor.pause();
+    }
+  }, [isPlaying]);
+
   // Activate element on user gesture (browser security)
   const activatePlayerElement = useCallback(() => {
     if (player && typeof player.activateElement === 'function') {
       try { player.activateElement(); } catch (e) { console.warn('[Spotify SDK] activateElement warning:', e); }
     }
+    // Unlock the silent anchor while we still have a real user gesture;
+    // iOS Safari requires the first play() on a media element to originate
+    // from one. Once unlocked, later play()/pause() calls from the
+    // isPlaying-sync effect above don't need a gesture.
+    silentAnchorRef.current?.play().catch(() => {});
   }, [player]);
 
   // Smooth position timer: interpolate from the last authoritative SDK sample
@@ -335,13 +420,36 @@ export function useSpotifyPlayer() {
     }
   }, [token, deviceId, resetPosition]);
 
+  // Load an already-resolved track list (e.g. from history) straight into the
+  // queue and start playback - skips the LLM/catalog-search round trip since
+  // these tracks were resolved once already at the time they were saved.
+  const loadAndPlayQueue = useCallback(async (trackItems) => {
+    if (!token) { alert('Please connect Spotify to stream music.'); return; }
+    if (!trackItems || trackItems.length === 0) return;
+    // Re-mint uids so resumed history entries get fresh React keys even if
+    // played again later - duplicate songs across sessions must not collide.
+    const freshItems = trackItems.map((t) => ({
+      ...t,
+      uid: `track-${t.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    }));
+    setQueue(freshItems);
+    setCurrentIndex(0);
+    resetPosition(0);
+    const uris = freshItems.map((t) => t.uri).filter(Boolean);
+    if (uris.length > 0) {
+      const success = await playUrisOnSpotify(uris, deviceId, token);
+      if (success) setIsPlaying(true);
+    }
+  }, [token, deviceId, resetPosition]);
+
   // Append steered tracks to existing queue (keeps current playing)
   const appendSteeredSeeds = useCallback(async (catalogQueries) => {
-    if (!token) { alert('Please connect Spotify to stream music.'); return; }
+    if (!token) { alert('Please connect Spotify to stream music.'); return []; }
     console.log('[Spotify SDK] Appending steered tracks to queue:', catalogQueries);
     const { trackItems } = await resolveTracksFromQueries(catalogQueries);
-    if (trackItems.length === 0) return;
+    if (trackItems.length === 0) return [];
     setQueue((prev) => [...prev, ...trackItems]);
+    return trackItems;
   }, [token]);
 
   const play = useCallback(async () => {
@@ -709,6 +817,7 @@ export function useSpotifyPlayer() {
     logout,
     searchAndPlaySeeds,
     appendSteeredSeeds,
+    loadAndPlayQueue,
     play,
     pause,
     skipNext,

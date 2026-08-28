@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 from app.config import Config
 from app.llm import get_llm_client
 from app.services.music_service import MusicService
-from app.services.cache_service import CurationCache
+from app.services.db_service import CurationCache
 
 logger = logging.getLogger(__name__)
 curation_bp = Blueprint("curation", __name__)
@@ -11,7 +11,7 @@ music_service = MusicService()
 
 
 def _get_curation_cache() -> CurationCache:
-    return CurationCache(Config.CACHE_DB_PATH, Config.CACHE_RETENTION_SECONDS)
+    return CurationCache(Config.DB_PATH, Config.CACHE_RETENTION_SECONDS)
 
 
 @curation_bp.route("/curate", methods=["POST"])

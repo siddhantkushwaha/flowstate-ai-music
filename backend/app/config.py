@@ -26,10 +26,12 @@ class Config:
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 
-    # Lazy-refresh SQLite cache for /curate results (see app/services/cache_service.py).
-    # Point this at a persistent volume in containerized deployments.
-    CACHE_DB_PATH = os.getenv(
-        "CACHE_DB_PATH",
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/cache.sqlite3")),
+    # Single SQLite database backing the curation cache, taste profiles, and
+    # curated session history (see app/services/db_service.py). Point this at
+    # a persistent volume in containerized deployments.
+    DB_PATH = os.getenv(
+        "DB_PATH",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/flowstate.sqlite3")),
     )
     CACHE_RETENTION_SECONDS = int(os.getenv("CACHE_RETENTION_SECONDS", str(7 * 24 * 3600)))
+    HISTORY_RETENTION_SECONDS = int(os.getenv("HISTORY_RETENTION_SECONDS", str(7 * 24 * 3600)))

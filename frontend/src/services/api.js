@@ -1,3 +1,5 @@
+import { getStoredAppSession, storeAppSession } from './spotifyAuth';
+
 const getApiBase = () => {
   if (import.meta.env.VITE_API_BASE_URL) {
     return `${import.meta.env.VITE_API_BASE_URL}/api`;
@@ -11,6 +13,103 @@ const getApiBase = () => {
 };
 
 const API_BASE = getApiBase();
+
+function authHeader() {
+  const session = getStoredAppSession();
+  return session?.sessionToken ? { Authorization: `Bearer ${session.sessionToken}` } : {};
+}
+
+// Shared fetch-with-same-origin-fallback for the newer, auth-scoped endpoints
+// (history, profile, session). Existing calls above keep their own inline
+// try/catch to avoid touching working code, but new endpoints share this.
+async function apiRequest(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json', ...authHeader(), ...(options.headers || {}) };
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  } catch (netErr) {
+    response = await fetch(`/api${path}`, { ...options, headers });
+  }
+  return response;
+}
+
+export async function establishAppSession(accessToken) {
+  try {
+    const response = await apiRequest('/auth/session', {
+      method: 'POST',
+      body: JSON.stringify({ access_token: accessToken }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    storeAppSession(data.session_token, data.user);
+    return data.user;
+  } catch (e) {
+    console.warn('[API] Failed to establish app session:', e);
+    return null;
+  }
+}
+
+export async function fetchUserProfile() {
+  try {
+    const response = await apiRequest('/profile', { method: 'GET' });
+    if (!response.ok) return '';
+    const data = await response.json();
+    return data.profile || '';
+  } catch (e) {
+    console.warn('[API] Failed to fetch user profile:', e);
+    return '';
+  }
+}
+
+export async function fetchHistory() {
+  try {
+    const response = await apiRequest('/history', { method: 'GET' });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.history || [];
+  } catch (e) {
+    console.warn('[API] Failed to fetch history:', e);
+    return [];
+  }
+}
+
+export async function createHistoryEntry({ prompt, curatorSummary, tracks }) {
+  try {
+    const response = await apiRequest('/history', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, curator_summary: curatorSummary, tracks }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.id || null;
+  } catch (e) {
+    console.warn('[API] Failed to save history entry:', e);
+    return null;
+  }
+}
+
+export async function patchHistoryEntry(id, { steerText, addedTracks }) {
+  try {
+    const response = await apiRequest(`/history/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ steer_text: steerText, added_tracks: addedTracks }),
+    });
+    return response.ok;
+  } catch (e) {
+    console.warn('[API] Failed to patch history entry:', e);
+    return false;
+  }
+}
+
+export async function deleteHistoryEntry(id) {
+  try {
+    const response = await apiRequest(`/history/${id}`, { method: 'DELETE' });
+    return response.ok;
+  } catch (e) {
+    console.warn('[API] Failed to delete history entry:', e);
+    return false;
+  }
+}
 
 export async function fetchClientConfig() {
   try {
@@ -84,20 +183,10 @@ export async function steerQueue(currentTrack, feedback, recentSkips = [], userP
 }
 
 export async function updateUserProfile(currentProfile, likedTrack) {
-  let response;
-  try {
-    response = await fetch(`${API_BASE}/profile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ current_profile: currentProfile, liked_track: likedTrack }),
-    });
-  } catch (netErr) {
-    response = await fetch(`/api/profile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ current_profile: currentProfile, liked_track: likedTrack }),
-    });
-  }
+  const response = await apiRequest('/profile', {
+    method: 'POST',
+    body: JSON.stringify({ current_profile: currentProfile, liked_track: likedTrack }),
+  });
 
   if (!response.ok) return currentProfile;
   const data = await response.json();

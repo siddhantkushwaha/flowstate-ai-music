@@ -7,9 +7,18 @@ import { MiniPlayer } from './components/MiniPlayer';
 import { QueueView } from './components/QueueView';
 import { VibeControls } from './components/VibeControls';
 import { TasteProfileModal } from './components/TasteProfileModal';
+import { HistoryPanel } from './components/HistoryPanel';
 import { useSpotifyPlayer } from './hooks/useSpotifyPlayer';
 import { useMediaSession } from './hooks/useMediaSession';
-import { curateVibe, steerQueue, updateUserProfile, fetchSteerSuggestions, fetchInfiniteFlowTracks, checkBackendHealth } from './services/api';
+import {
+  curateVibe, steerQueue, updateUserProfile, fetchSteerSuggestions, fetchInfiniteFlowTracks, checkBackendHealth,
+  fetchUserProfile, fetchHistory, createHistoryEntry, patchHistoryEntry, deleteHistoryEntry,
+} from './services/api';
+
+// How long a freshly curated queue must play continuously (on its first
+// track) before the session is saved to history - filters out abandoned or
+// instantly-skipped prompts.
+const HISTORY_SAVE_THRESHOLD_MS = 30 * 1000;
 
 export default function App() {
   const spotify = useSpotifyPlayer();
@@ -34,7 +43,9 @@ export default function App() {
     likeTrack,
     saveAsPlaylist,
     activatePlayerElement,
+    loadAndPlayQueue,
     login,
+    logout,
     isInfiniteFlow,
     setIsInfiniteFlow,
   } = spotify;
@@ -52,9 +63,12 @@ export default function App() {
   const [steerSuggestions, setSteerSuggestions] = useState([]);
   const [likedTrackIds, setLikedTrackIds] = useState([]);
   const [toastMessage, setToastMessage] = useState(null);
+  const [history, setHistory] = useState([]);
 
   const isExtendingRef = useRef(false);
   const lastExtendQueueLengthRef = useRef(-1);
+  const currentHistoryIdRef = useRef(null);
+  const historySavedForQueueRef = useRef(false);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -74,6 +88,40 @@ export default function App() {
   useEffect(() => {
     checkBackendHealth().then(setBackendStatus);
   }, []);
+
+  // Hydrate the per-user taste profile and recent (7-day) curation history
+  // from the backend as soon as the app session is available, instead of
+  // starting both at empty on every reload.
+  useEffect(() => {
+    if (!isAuthorized) return;
+    fetchUserProfile().then((profile) => { if (profile) setUserProfile(profile); });
+    fetchHistory().then(setHistory);
+  }, [isAuthorized]);
+
+  const saveCurrentSessionToHistory = useCallback(async () => {
+    if (historySavedForQueueRef.current || queue.length === 0) return;
+    const prompt = initialPrompt || lastPrompt;
+    if (!prompt) return;
+    historySavedForQueueRef.current = true;
+    const id = await createHistoryEntry({ prompt, curatorSummary, tracks: queue });
+    if (!id) { historySavedForQueueRef.current = false; return; }
+    currentHistoryIdRef.current = id;
+    setHistory((prev) => [
+      { id, prompt, curator_summary: curatorSummary, tracks: queue, steer_history: [], updated_at: Date.now() / 1000 },
+      ...prev,
+    ]);
+  }, [queue, initialPrompt, lastPrompt, curatorSummary]);
+
+  // Save a curated session to history once its first track has played
+  // continuously for HISTORY_SAVE_THRESHOLD_MS - filters out prompts that
+  // were never actually listened to.
+  useEffect(() => {
+    if (!isAuthorized || !isPlaying || currentIndex !== 0 || queue.length === 0 || historySavedForQueueRef.current) {
+      return;
+    }
+    const timer = setTimeout(saveCurrentSessionToHistory, HISTORY_SAVE_THRESHOLD_MS);
+    return () => clearTimeout(timer);
+  }, [isAuthorized, isPlaying, currentIndex, queue.length, saveCurrentSessionToHistory]);
 
   // How many tracks must remain in the queue before we start prefetching the
   // next batch. Triggering only on the very last track meant playback caught
@@ -155,6 +203,8 @@ export default function App() {
     setInitialPrompt(promptText);
     setLastPrompt(promptText);
     setSteerHistory([]);
+    currentHistoryIdRef.current = null;
+    historySavedForQueueRef.current = false;
     try {
       const data = await curateVibe(promptText, userProfile);
       setCuratorSummary(data.curator_summary);
@@ -191,10 +241,13 @@ export default function App() {
       );
 
       if (data.catalog_queries && data.catalog_queries.length > 0) {
-        await appendSteeredSeeds(data.catalog_queries);
+        const addedTracks = await appendSteeredSeeds(data.catalog_queries);
         const newTrackNames = data.catalog_queries.map((q) => `${q.artist} - ${q.track_name}`);
         setPlayedTracks((prev) => [...prev, ...newTrackNames]);
         showToast(`Added ${data.catalog_queries.length} steered track(s) to queue!`);
+        if (currentHistoryIdRef.current && addedTracks && addedTracks.length > 0) {
+          patchHistoryEntry(currentHistoryIdRef.current, { steerText: feedbackText, addedTracks });
+        }
       }
       // Refresh suggestions
       updateSuggestions(lastPrompt, currentTrack, queue);
@@ -255,6 +308,42 @@ export default function App() {
     return result;
   };
 
+  const handleResumeHistory = async (entry) => {
+    activatePlayerElement();
+    setInitialPrompt(entry.prompt);
+    setLastPrompt(entry.prompt);
+    setCuratorSummary(entry.curator_summary || '');
+    setSteerHistory(entry.steer_history || []);
+    setPlayedTracks((entry.tracks || []).map((t) => `${t.artistName || ''} - ${t.name || ''}`));
+    currentHistoryIdRef.current = entry.id;
+    historySavedForQueueRef.current = true; // already saved - don't re-save on resume
+    await loadAndPlayQueue(entry.tracks || []);
+  };
+
+  const handleLogout = () => {
+    logout();
+    setUserProfile('');
+    setHistory([]);
+    setInitialPrompt('');
+    setLastPrompt('');
+    setSteerHistory([]);
+    setPlayedTracks([]);
+    setCuratorSummary('');
+    setLikedTrackIds([]);
+    currentHistoryIdRef.current = null;
+    historySavedForQueueRef.current = false;
+  };
+
+  const handleDeleteHistory = async (id) => {
+    const ok = await deleteHistoryEntry(id);
+    if (ok) {
+      setHistory((prev) => prev.filter((h) => h.id !== id));
+      if (currentHistoryIdRef.current === id) currentHistoryIdRef.current = null;
+    } else {
+      showToast('Failed to delete history entry.');
+    }
+  };
+
   const isCurrentLiked = currentTrack && (likedTrackIds.includes(currentTrack.id) || likedTrackIds.includes(currentTrack.uri));
 
   return (
@@ -272,6 +361,7 @@ export default function App() {
         backendStatus={backendStatus}
         onConnectSpotify={login}
         onOpenTasteProfile={() => setIsTasteModalOpen(true)}
+        onLogout={handleLogout}
       />
 
       <main className="px-4 sm:px-8 py-6 max-w-7xl mx-auto w-full flex-1">
@@ -314,6 +404,11 @@ export default function App() {
               onConnectSpotify={login}
               isInfiniteFlow={isInfiniteFlow}
               onToggleInfiniteFlow={() => setIsInfiniteFlow((prev) => !prev)}
+            />
+            <HistoryPanel
+              entries={history}
+              onResume={handleResumeHistory}
+              onDelete={handleDeleteHistory}
             />
           </div>
 

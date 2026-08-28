@@ -1,9 +1,9 @@
 import React from 'react';
-import { Waves, ShieldCheck, Disc, Sparkles } from 'lucide-react';
+import { Waves, ShieldCheck, Disc, Sparkles, LogOut } from 'lucide-react';
 
-export function Header({ isAuthorized, backendStatus, onConnectSpotify, onOpenTasteProfile }) {
+export function Header({ isAuthorized, backendStatus, onConnectSpotify, onOpenTasteProfile, onLogout }) {
   return (
-    <header className="px-4 sm:px-8 py-3.5 border-b border-white/5 glass-panel sticky top-0 z-40 flex items-center justify-between shadow-2xl">
+    <header className="px-4 sm:px-8 pb-3.5 safe-top border-b border-white/5 glass-panel sticky top-0 z-40 flex items-center justify-between shadow-2xl">
       {/* Brand */}
       <div className="flex items-center gap-3">
         <div className="w-9 h-9 rounded-2xl bg-gradient-to-br from-emerald-400 via-teal-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-emerald-500/20 ring-1 ring-white/20">
@@ -37,6 +37,16 @@ export function Header({ isAuthorized, backendStatus, onConnectSpotify, onOpenTa
           {isAuthorized ? <ShieldCheck className="w-4 h-4" /> : <Disc className="w-4 h-4 animate-spin-slow" />}
           <span>{isAuthorized ? 'Spotify Active' : 'Connect Spotify'}</span>
         </button>
+
+        {isAuthorized && onLogout && (
+          <button
+            onClick={onLogout}
+            title="Log out (ends your session on this device)"
+            className="p-2 rounded-xl glass-card text-slate-400 hover:text-rose-400 hover:border-rose-500/30 transition-all"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </header>
   );

@@ -37,3 +37,6 @@ frontend/.vite/
 *.log
 .vscode/
 .idea/
+
+# Local specs/docs (never committed)
+docs/
