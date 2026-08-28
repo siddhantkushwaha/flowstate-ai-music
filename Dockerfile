@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # ==========================================
 # Stage 1: Build Frontend React PWA
 # ==========================================
@@ -5,7 +7,8 @@ FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
 
 COPY frontend/package*.json ./
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm \
+    npm install
 
 COPY frontend ./
 ARG VITE_SPOTIFY_CLIENT_ID=""
@@ -13,7 +16,8 @@ ARG VITE_API_BASE_URL=""
 ENV VITE_SPOTIFY_CLIENT_ID=$VITE_SPOTIFY_CLIENT_ID
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 
-RUN npm run build
+RUN --mount=type=cache,target=/app/frontend/node_modules/.vite \
+    npm run build
 
 # ==========================================
 # Stage 2: Production Python Backend + Static Host
@@ -21,9 +25,11 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies (pip cache mount persists across builds, even when
+# requirements.txt changes, without bloating the final image layer)
 COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # Copy Backend Source
 COPY backend ./backend
@@ -35,6 +41,10 @@ ENV STATIC_DIR=/app/static_dist
 ENV PORT=3000
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1
+# SQLite lazy-refresh cache for /curate - point at a mounted volume so it
+# survives container restarts/rebuilds (see docker-compose.yml).
+ENV CACHE_DB_PATH=/app/data/cache.sqlite3
+RUN mkdir -p /app/data
 
 EXPOSE 3000
 

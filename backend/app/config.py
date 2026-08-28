@@ -25,3 +25,11 @@ class Config:
     # Ollama Local LLM Configuration
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+
+    # Lazy-refresh SQLite cache for /curate results (see app/services/cache_service.py).
+    # Point this at a persistent volume in containerized deployments.
+    CACHE_DB_PATH = os.getenv(
+        "CACHE_DB_PATH",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/cache.sqlite3")),
+    )
+    CACHE_RETENTION_SECONDS = int(os.getenv("CACHE_RETENTION_SECONDS", str(7 * 24 * 3600)))

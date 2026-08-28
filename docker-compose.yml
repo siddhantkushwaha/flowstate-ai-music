@@ -18,7 +18,13 @@ services:
       - LLM_PROVIDER=gemini
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemma-2-27b-it}
+      - CACHE_DB_PATH=/app/data/cache.sqlite3
     env_file:
       - path: .env
         required: false
+    volumes:
+      - flowstate_cache_data:/app/data
     restart: unless-stopped
+
+volumes:
+  flowstate_cache_data:

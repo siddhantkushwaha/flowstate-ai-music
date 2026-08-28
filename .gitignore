@@ -6,6 +6,10 @@ __pycache__/
 *.pyd
 .pytest_cache/
 
+# Local SQLite cache data
+backend/data/
+*.sqlite3
+
 # Dependencies
 node_modules/
 frontend/node_modules/

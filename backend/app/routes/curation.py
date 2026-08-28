@@ -1,11 +1,17 @@
 import logging
 from flask import Blueprint, request, jsonify
+from app.config import Config
 from app.llm import get_llm_client
 from app.services.music_service import MusicService
+from app.services.cache_service import CurationCache
 
 logger = logging.getLogger(__name__)
 curation_bp = Blueprint("curation", __name__)
 music_service = MusicService()
+
+
+def _get_curation_cache() -> CurationCache:
+    return CurationCache(Config.CACHE_DB_PATH, Config.CACHE_RETENTION_SECONDS)
 
 
 @curation_bp.route("/curate", methods=["POST"])
@@ -13,6 +19,10 @@ def curate():
     """
     POST /api/curate
     Body: { "prompt": "natural language description", "user_profile": "optional profile context" }
+
+    Lazy-refresh cache: check the SQLite cache for this prompt first. On a hit
+    (and still within retention), skip the LLM entirely. On a miss, call the LLM
+    and cache the result for next time.
     """
     data = request.get_json() or {}
     prompt = data.get("prompt", "").strip()
@@ -21,7 +31,27 @@ def curate():
     if not prompt:
         return jsonify({"error": "Prompt is required"}), 400
 
+    cache = _get_curation_cache()
+
     try:
+        cached = cache.get(prompt)
+        if cached:
+            search_queries = music_service.prepare_catalog_search_queries_from_dicts(
+                cached["seeds"]
+            )
+            return (
+                jsonify(
+                    {
+                        "prompt": prompt,
+                        "curator_summary": cached["curator_summary"],
+                        "seeds": cached["seeds"],
+                        "catalog_queries": search_queries,
+                        "cached": True,
+                    }
+                ),
+                200,
+            )
+
         llm_client = get_llm_client()
         curation_result = llm_client.generate_seed_tracks(
             prompt=prompt, user_profile=user_profile
@@ -29,14 +59,24 @@ def curate():
         search_queries = music_service.prepare_catalog_search_queries(
             curation_result.seeds
         )
+        seeds_payload = [seed.model_dump() for seed in curation_result.seeds]
+
+        cache.set(
+            prompt,
+            {
+                "curator_summary": curation_result.curator_summary,
+                "seeds": seeds_payload,
+            },
+        )
 
         return (
             jsonify(
                 {
                     "prompt": curation_result.prompt,
                     "curator_summary": curation_result.curator_summary,
-                    "seeds": [seed.model_dump() for seed in curation_result.seeds],
+                    "seeds": seeds_payload,
                     "catalog_queries": search_queries,
+                    "cached": False,
                 }
             ),
             200,

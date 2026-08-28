@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from app import create_app
+from app.config import Config
 from app.llm.base import CurationResult, SeedTrack, SteerResult
 
 
@@ -95,6 +96,38 @@ def test_curate_route_error():
             rv = c.post("/api/curate", json={"prompt": "Some vibe"})
             assert rv.status_code == 500
             assert "Failed to curate music" in rv.get_json()["error"]
+
+
+def test_curate_route_uses_lazy_cache(tmp_path):
+    app = create_app()
+    app.config["TESTING"] = True
+
+    mock_llm = MagicMock()
+    mock_llm.generate_seed_tracks.return_value = CurationResult(
+        prompt="Cached prompt test",
+        curator_summary="Cached mix",
+        seeds=[
+            SeedTrack(artist="A", track_name="T", reasoning="r", vibe_tags=[])
+        ],
+    )
+
+    with patch("app.routes.curation.get_llm_client", return_value=mock_llm), patch.object(
+        Config, "CACHE_DB_PATH", str(tmp_path / "cache.sqlite3")
+    ):
+        with app.test_client() as c:
+            rv1 = c.post("/api/curate", json={"prompt": "Cached prompt test"})
+            assert rv1.status_code == 200
+            assert rv1.get_json()["cached"] is False
+
+            rv2 = c.post("/api/curate", json={"prompt": "Cached prompt test"})
+            assert rv2.status_code == 200
+            body2 = rv2.get_json()
+            assert body2["cached"] is True
+            assert body2["curator_summary"] == "Cached mix"
+            assert body2["catalog_queries"][0]["artist"] == "A"
+
+    # LLM should only be called once - the second request was served from cache.
+    assert mock_llm.generate_seed_tracks.call_count == 1
 
 
 def test_steer_route(client):

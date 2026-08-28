@@ -54,6 +54,7 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState(null);
 
   const isExtendingRef = useRef(false);
+  const lastExtendQueueLengthRef = useRef(-1);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -74,10 +75,20 @@ export default function App() {
     checkBackendHealth().then(setBackendStatus);
   }, []);
 
-  // Auto-extend queue when Infinite Flow is enabled and queue is near the end
+  // How many tracks must remain in the queue before we start prefetching the
+  // next batch. Triggering only on the very last track meant playback caught
+  // up to the fetch; starting a couple tracks early gives the LLM + catalog
+  // search round trip time to finish before the queue actually runs out.
+  const INFINITE_FLOW_PREFETCH_LOOKAHEAD = 2;
+
+  // Auto-extend queue when Infinite Flow is enabled and the queue is running low
   const handleAutoExtendInfiniteFlow = useCallback(async () => {
     if (isExtendingRef.current || !isInfiniteFlow) return;
     if (queue.length === 0) return;
+    // Already requested a continuation for this exact queue state - avoid
+    // re-firing on every render while we wait for it to land.
+    if (lastExtendQueueLengthRef.current === queue.length) return;
+    lastExtendQueueLengthRef.current = queue.length;
 
     isExtendingRef.current = true;
     const activePrompt = initialPrompt || lastPrompt || 'Continuous music flow';
@@ -105,15 +116,21 @@ export default function App() {
       }
     } catch (err) {
       console.warn('[Infinite Flow] Auto-extend error:', err);
+      // Allow a retry on the next check instead of getting stuck waiting
+      // for a queue-length change that will never come.
+      lastExtendQueueLengthRef.current = -1;
     } finally {
       isExtendingRef.current = false;
     }
   }, [isInfiniteFlow, queue.length, initialPrompt, lastPrompt, currentTrack, steerHistory, playedTracks, userProfile, appendSteeredSeeds]);
 
-  // Monitor playback position in queue to trigger Infinite Flow expansion
+  // Monitor playback position in queue to trigger Infinite Flow prefetch
+  // early, well before the current track finishes.
   useEffect(() => {
     if (!isInfiniteFlow) return;
-    if (queue.length > 0 && currentIndex >= queue.length - 1 && !isExtendingRef.current) {
+    if (queue.length === 0) return;
+    const tracksRemaining = queue.length - 1 - currentIndex;
+    if (tracksRemaining <= INFINITE_FLOW_PREFETCH_LOOKAHEAD && !isExtendingRef.current) {
       handleAutoExtendInfiniteFlow();
     }
   }, [isInfiniteFlow, currentIndex, queue.length, handleAutoExtendInfiniteFlow]);
@@ -210,7 +227,7 @@ export default function App() {
     if (spotifySuccess) {
       showToast(`Saved "${trackTitle}" to your Spotify Liked Songs!`);
     } else {
-      showToast(`Saved "${trackTitle}" to your taste profile!`);
+      showToast(`Couldn't save "${trackTitle}" to Spotify (check console for details). Saved to your taste profile instead.`);
     }
   };
 

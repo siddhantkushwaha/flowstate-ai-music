@@ -125,6 +125,9 @@ export function useSpotifyPlayer() {
         setIsPlaying(!state.paused);
         setPositionMs(state.position || 0);
         setDurationMs(state.duration || 0);
+        // Anchor the interpolation timer (below) to this authoritative sample
+        // so the smoothed position never drifts from what Spotify reports.
+        positionAnchorRef.current = { positionMs: state.position || 0, atRealTime: Date.now() };
 
         // Sync currentIndex if Spotify SDK advanced to another track in our queue
         const sdkTrack = state.track_window?.current_track;
@@ -160,13 +163,22 @@ export function useSpotifyPlayer() {
     }
   }, [player]);
 
-  // Smooth position timer
+  // Smooth position timer: interpolate from the last authoritative SDK sample
+  // using elapsed wall-clock time (instead of blindly adding a fixed step per
+  // tick), so the seek bar doesn't drift or visibly jump when ticks land late.
+  const positionAnchorRef = useRef({ positionMs: 0, atRealTime: Date.now() });
+  const resetPosition = useCallback((ms = 0) => {
+    setPositionMs(ms);
+    positionAnchorRef.current = { positionMs: ms, atRealTime: Date.now() };
+  }, []);
   useEffect(() => {
     let interval = null;
     if (isPlaying) {
       interval = setInterval(() => {
-        setPositionMs((prev) => (prev < durationMs ? prev + 1000 : prev));
-      }, 1000);
+        const { positionMs: anchorPos, atRealTime } = positionAnchorRef.current;
+        const elapsed = Date.now() - atRealTime;
+        setPositionMs(Math.min(anchorPos + elapsed, durationMs || anchorPos + elapsed));
+      }, 250);
     } else {
       clearInterval(interval);
     }
@@ -190,8 +202,8 @@ export function useSpotifyPlayer() {
     logoutSpotify();
     setToken(null); setPlayer(null); setDeviceId(null);
     setIsPlaying(false); setQueue([]); setCurrentIndex(0);
-    setPositionMs(0); setDurationMs(0);
-  }, []);
+    resetPosition(0); setDurationMs(0);
+  }, [resetPosition]);
 
   // Resolve live Spotify device ID (avoids stale ID)
   const getLiveValidDeviceId = async (preferredDevId, accessToken) => {
@@ -213,11 +225,47 @@ export function useSpotifyPlayer() {
     return preferredDevId;
   };
 
+  const attemptPlay = (targetDevId, uris, accessToken) =>
+    fetch(`https://api.spotify.com/v1/me/player/play?device_id=${targetDevId}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uris }),
+    });
+
+  const reportPlayError = async (res) => {
+    const errText = await res.text();
+    console.error(`[Spotify SDK] Play error (${res.status}):`, errText);
+    if (res.status === 403) alert('Spotify requires Premium to stream.');
+    else if (res.status === 401) alert('Session expired. Please reconnect Spotify.');
+    else if (res.status === 404) alert('Spotify device not found. Try refreshing the page.');
+    else alert(`Spotify error (${res.status}): ${errText}`);
+  };
+
+  // Skips/track-selects call this constantly, so the common case (device is
+  // already active) takes a single request instead of a devices-list lookup
+  // plus a transfer round trip before the play call. Only fall back to the
+  // slower resolve-and-transfer path if the fast attempt fails.
   const playUrisOnSpotify = async (uris, devId, accessToken) => {
+    activatePlayerElement();
+
+    if (devId) {
+      try {
+        console.log('[Spotify SDK] Playing URIs (fast path):', uris);
+        const res = await attemptPlay(devId, uris, accessToken);
+        if (res.ok || res.status === 204) return true;
+        if (res.status !== 404) {
+          await reportPlayError(res);
+          return false;
+        }
+        console.warn('[Spotify SDK] Fast play got 404, falling back to device resolve + transfer.');
+      } catch (err) {
+        console.warn('[Spotify SDK] Fast play attempt failed, falling back to device resolve:', err);
+      }
+    }
+
     const targetDevId = await getLiveValidDeviceId(devId, accessToken);
     if (!targetDevId) { console.error('[Spotify SDK] No active deviceId resolved.'); return false; }
     try {
-      activatePlayerElement();
       console.log(`[Spotify SDK] Transferring to deviceId: ${targetDevId}`);
       await fetch('https://api.spotify.com/v1/me/player', {
         method: 'PUT',
@@ -225,19 +273,10 @@ export function useSpotifyPlayer() {
         body: JSON.stringify({ device_ids: [targetDevId], play: true }),
       });
       console.log('[Spotify SDK] Playing URIs:', uris);
-      const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${targetDevId}`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uris }),
-      });
+      const res = await attemptPlay(targetDevId, uris, accessToken);
       console.log(`[Spotify SDK] Play response: ${res.status}`);
       if (!res.ok && res.status !== 204) {
-        const errText = await res.text();
-        console.error(`[Spotify SDK] Play error (${res.status}):`, errText);
-        if (res.status === 403) alert('Spotify requires Premium to stream.');
-        else if (res.status === 401) alert('Session expired. Please reconnect Spotify.');
-        else if (res.status === 404) alert('Spotify device not found. Try refreshing the page.');
-        else alert(`Spotify error (${res.status}): ${errText}`);
+        await reportPlayError(res);
         return false;
       }
       return true;
@@ -289,12 +328,12 @@ export function useSpotifyPlayer() {
     if (trackItems.length === 0) { alert('No matching Spotify tracks found.'); return; }
     setQueue(trackItems);
     setCurrentIndex(0);
-    setPositionMs(0);
+    resetPosition(0);
     if (spotifyUris.length > 0) {
       const success = await playUrisOnSpotify(spotifyUris, deviceId, token);
       if (success) setIsPlaying(true);
     }
-  }, [token, deviceId]);
+  }, [token, deviceId, resetPosition]);
 
   // Append steered tracks to existing queue (keeps current playing)
   const appendSteeredSeeds = useCallback(async (catalogQueries) => {
@@ -323,7 +362,7 @@ export function useSpotifyPlayer() {
         // Replay / loop from top when reaching the end
         console.log('[Spotify SDK] Reached end of queue with Infinite Flow OFF. Looping from top.');
         setCurrentIndex(0);
-        setPositionMs(0);
+        resetPosition(0);
         const uris = currentQ.map((t) => t.uri).filter(Boolean);
         if (token && uris.length > 0) {
           const success = await playUrisOnSpotify(uris, deviceId, token);
@@ -336,14 +375,14 @@ export function useSpotifyPlayer() {
     }
     const nextIdx = idx + 1;
     setCurrentIndex(nextIdx);
-    setPositionMs(0);
+    resetPosition(0);
     // Play from nextIdx onward
     const uris = currentQ.slice(nextIdx).map((t) => t.uri).filter(Boolean);
     if (token && uris.length > 0) {
       const success = await playUrisOnSpotify(uris, deviceId, token);
       if (success) setIsPlaying(true);
     }
-  }, [token, deviceId, activatePlayerElement]);
+  }, [token, deviceId, activatePlayerElement, resetPosition]);
 
 
   const skipPrevious = useCallback(async () => {
@@ -352,31 +391,31 @@ export function useSpotifyPlayer() {
     const idx = currentIndexRef.current;
     // If past 3 seconds, restart current track; else go back
     if (positionMs > 3000) {
-      if (player) { try { await player.seek(0); setPositionMs(0); return; } catch (e) {} }
+      if (player) { try { await player.seek(0); resetPosition(0); return; } catch (e) {} }
     }
     const prevIdx = Math.max(0, idx - 1);
     setCurrentIndex(prevIdx);
-    setPositionMs(0);
+    resetPosition(0);
     const uris = currentQ.slice(prevIdx).map((t) => t.uri).filter(Boolean);
     if (token && uris.length > 0) {
       const success = await playUrisOnSpotify(uris, deviceId, token);
       if (success) setIsPlaying(true);
     }
-  }, [token, deviceId, player, positionMs, activatePlayerElement]);
+  }, [token, deviceId, player, positionMs, activatePlayerElement, resetPosition]);
 
   const selectQueueTrack = useCallback(async (index) => {
     const currentQ = queueRef.current;
     if (index < 0 || index >= currentQ.length) return;
     activatePlayerElement();
     setCurrentIndex(index);
-    setPositionMs(0);
+    resetPosition(0);
     const uris = currentQ.slice(index).map((t) => t.uri).filter(Boolean);
     if (token && uris.length > 0) {
       console.log(`[Spotify SDK] Playing queue track #${index + 1}: ${currentQ[index].name}`);
       const success = await playUrisOnSpotify(uris, deviceId, token);
       if (success) setIsPlaying(true);
     }
-  }, [token, deviceId, activatePlayerElement]);
+  }, [token, deviceId, activatePlayerElement, resetPosition]);
 
   const removeFromQueue = useCallback((index) => {
     const currentQ = queueRef.current;
@@ -392,8 +431,13 @@ export function useSpotifyPlayer() {
   }, []);
 
   const seek = useCallback(async (positionTargetMs) => {
-    if (player) { try { await player.seek(positionTargetMs); setPositionMs(positionTargetMs); } catch (e) { console.error('[Spotify SDK] Seek error:', e); } }
-  }, [player]);
+    if (player) {
+      try {
+        await player.seek(positionTargetMs);
+        resetPosition(positionTargetMs);
+      } catch (e) { console.error('[Spotify SDK] Seek error:', e); }
+    }
+  }, [player, resetPosition]);
 
   // Save to Spotify liked songs
   const likeTrack = useCallback(async (track) => {

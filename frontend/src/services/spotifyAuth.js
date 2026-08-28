@@ -15,6 +15,13 @@ const SPOTIFY_SCOPES = [
 
 const TOKEN_KEY = 'flowstate_spotify_access_token';
 const EXPIRES_KEY = 'flowstate_spotify_token_expires';
+const SCOPE_KEY = 'flowstate_spotify_token_scope';
+
+function clearStoredToken() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(EXPIRES_KEY);
+  localStorage.removeItem(SCOPE_KEY);
+}
 
 // Pure JS SHA-256 implementation fallback for mobile HTTP origins
 export function sha256PureJs(ascii) {
@@ -152,10 +159,24 @@ export function getStoredSpotifyToken() {
   const expiresAt = localStorage.getItem(EXPIRES_KEY);
   if (!token || !expiresAt) return null;
   if (Date.now() > parseInt(expiresAt, 10)) {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(EXPIRES_KEY);
+    clearStoredToken();
     return null;
   }
+
+  // A token stored before a scope (e.g. playlist-modify-*, user-library-modify)
+  // was added to SPOTIFY_SCOPES is still "valid" (not expired) but Spotify will
+  // 403 on any endpoint needing the missing scope - notably Like and Save
+  // Playlist. Detect that here and force re-auth instead of failing silently.
+  const storedScope = localStorage.getItem(SCOPE_KEY) || '';
+  const grantedScopes = new Set(storedScope.split(' ').filter(Boolean));
+  const requiredScopes = SPOTIFY_SCOPES.split(' ');
+  const hasAllRequiredScopes = requiredScopes.every((s) => grantedScopes.has(s));
+  if (!hasAllRequiredScopes) {
+    console.warn('[Spotify Auth] Stored token is missing newly required scopes, clearing to force re-auth.');
+    clearStoredToken();
+    return null;
+  }
+
   return token;
 }
 
@@ -215,6 +236,8 @@ export async function exchangeCodeForToken(clientId, code) {
 
   localStorage.setItem(TOKEN_KEY, data.access_token);
   localStorage.setItem(EXPIRES_KEY, expiresAt.toString());
+  // Spotify echoes back the scopes actually granted for this token.
+  localStorage.setItem(SCOPE_KEY, data.scope || SPOTIFY_SCOPES);
   sessionStorage.removeItem('spotify_code_verifier');
 
   // Clean URL parameters
@@ -224,6 +247,5 @@ export async function exchangeCodeForToken(clientId, code) {
 }
 
 export function logoutSpotify() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(EXPIRES_KEY);
+  clearStoredToken();
 }
