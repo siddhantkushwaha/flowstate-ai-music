@@ -41,9 +41,10 @@ ENV STATIC_DIR=/app/static_dist
 ENV PORT=3000
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1
-# SQLite lazy-refresh cache for /curate - point at a mounted volume so it
-# survives container restarts/rebuilds (see docker-compose.yml).
-ENV CACHE_DB_PATH=/app/data/cache.sqlite3
+# Single SQLite db (curation cache, taste profiles, curated session history)
+# - point at a mounted volume so it survives container restarts/rebuilds
+# (see docker-compose.yml).
+ENV DB_PATH=/app/data/flowstate.sqlite3
 RUN mkdir -p /app/data
 
 EXPOSE 3000
